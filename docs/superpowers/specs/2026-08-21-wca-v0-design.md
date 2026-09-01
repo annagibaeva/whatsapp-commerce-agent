@@ -27,29 +27,36 @@ v0 must demonstrate seven properties:
 
 ## 2. Scope
 
-**In:** one service category (colour), five rules, twenty test cases, a mock calendar with TTL holds and a reaper, the gate with all six checks, fact extraction via the Anthropic API, a fake transport with a simulated clock, an audit record, and a harness that runs the cases with the gate off and on.
+**In:** one service category (colour), five rules, twenty test cases, a mock calendar with TTL holds and a reaper, the gate with all six checks, fact extraction via the Anthropic API, a fake transport with a simulated clock, an audit record, a harness that runs the cases with the gate off and on, **and one live WhatsApp thread against the Cloud API**.
 
 **Out, deliberately:**
 
 | Out | Why |
 |---|---|
-| **The live WhatsApp thread** | Needs a Meta test number, app and verified webhook. None is available, and the last project's central claim went unproven because a credential gap surfaced at the checkpoint rather than at design time. `transport/whatsapp.py` defines the port and the message shapes but is **not wired**, and nothing in the exit criteria depends on it. |
 | Taking the deposit | PRD §11. The rule fires; no money moves. |
 | Multiple businesses, rescheduling, cancellation, second language, Flows | PRD §11 |
-| Live calendar integration | v1 |
+| Live calendar integration | v1 — the calendar stays mock even on the live thread |
 
-Bringing the live thread into scope later is additive: implement `TransportPort` against the Cloud API and point the runner at it. No other module changes.
+**On the live thread.** Every automated test runs against the fake transport; the live thread is a demonstration, never a test. Nothing in CI depends on Meta being reachable, and the exit criteria separate what the fake transport proves (§14.1–8) from what the live thread shows (§14.9–11). This split is deliberate: a green suite must never require a network, a token, or a tunnel.
 
 ## 3. Stack
 
 Python 3.12, `uv`, Pydantic v2 for every boundary model, pytest. Anthropic API for fact extraction only. Standard library on the default path, per PRD §10.
 
-No web framework in v0 — there is no live webhook to receive. The fake transport is a Python object, which is what makes the simulated clock possible.
+**FastAPI + uvicorn for the webhook receiver only.** The PRD asks for standard library on the default path, and the default path — rules, gate, calendar, audit — has no framework in it. The receiver is infrastructure at the edge: two endpoints, and it must acknowledge within Meta's retry timeout while work continues in the background (§4.1). `http.server` would make that concurrency hand-rolled, which is a worse trade than one dependency at the boundary.
+
+The fake transport remains a plain Python object with no server at all, which is what makes the simulated clock possible.
 
 ## 4. Architecture
 
 ```
-webhook ─▶ dedup(message_id) ─▶ per-thread serial queue
+Meta Cloud API
+      │  POST, at-least-once, order not guaranteed
+      ▼
+webhook receiver ── verify X-Hub-Signature-256 ──▶ 200 OK immediately
+      │                    (reject on mismatch)
+      ▼
+   dedup(message_id) ─▶ per-thread serial queue
                                         │
                         ┌───────────────┴───────────────┐
                         ▼                               ▼
@@ -89,6 +96,20 @@ Three properties, each with a test that fails if it stops being true:
 **The gate is a pure function.** `evaluate(proposal, facts, ruleset, calendar_view, window_view, now) -> Verdict`. It takes no clients, mutates nothing, and returns a verdict — never a corrected proposal. Called twice with the same arguments it returns an equal verdict.
 
 **The gate can only block.** `Verdict` is `PASS` or `BLOCK(check, kind, reason)`. There is no variant carrying an alternative action, so the gate structurally cannot supply an answer and therefore cannot introduce a mistake of its own.
+
+### 4.1 The webhook edge
+
+Three requirements the fake transport never had, each with a way to fail that only shows up in production.
+
+**Signature verification is a trust boundary, not a formality.** Meta signs every webhook body with the app secret as `X-Hub-Signature-256`. Without verifying it, anyone who discovers the URL can post a message and inject facts into a pipeline that books appointments. The receiver computes an HMAC-SHA256 over the **raw request body** — not the re-serialised JSON, since re-serialisation changes bytes and breaks the comparison — and compares with `hmac.compare_digest`. An unverified request is rejected before parsing, and never reaches dedup.
+
+A test asserts that a body with a wrong or absent signature produces no conversation state and no proposal.
+
+**Acknowledge first, work second.** Meta retries a webhook that is not answered quickly, and a retry storm turns at-least-once into many-times. The receiver validates the signature, enqueues, and returns 200 — it never waits on a model call or the gate. Dedup on `message_id` is what makes the retries harmless, so dedup must happen on the **processing** side of the queue, not only at the edge, or a burst of retries can race past a check that has not yet recorded the first copy.
+
+**Webhook verification handshake.** Meta issues `GET` with `hub.mode`, `hub.challenge` and `hub.verify_token`; the receiver echoes the challenge only when the token matches the configured value.
+
+The live thread also needs a publicly reachable HTTPS URL. That is an operational dependency, not a code one — a tunnel in development, any host in v1 — and the spec records it so it is not discovered on demo day.
 
 ## 5. Rules as data
 
@@ -229,6 +250,8 @@ They are **drafted then reviewed**, not observed. The spec records this so nobod
 
 The PRD is explicit that the platform exposes none of this reliably and the check has to guess. This spec's guess models two of the three named inputs and says so; it does not model per-user frequency caps, because their behaviour is opaque and inventing it would produce a check that looks rigorous while asserting fiction.
 
+**On the live thread the window becomes real**, and a template that is not actually approved in Meta's console will fail to send whatever check 6 concluded. The template registry must therefore be seeded from the real approval state before the live demonstration, and the audit record stores the registry's answer so a mismatch between what check 6 believed and what Meta did is visible afterwards rather than invisible. Hour-23 expiry is still only testable under the simulated clock — the live thread cannot demonstrate it without waiting a day.
+
 ## 14. Exit criteria
 
 Each is a command whose output is recorded, not a claim.
@@ -242,6 +265,12 @@ Each is a command whose output is recorded, not a claim.
 7. The gate is provably model-free: the import-graph test passes, and calling `evaluate` twice with identical arguments returns equal verdicts.
 8. Every case's audit record cites `rule_id@version` and the `ruleset_version` live at the time.
 
+**On the live thread** — demonstrated, not automated, and not required for a green suite:
+
+9. One real WhatsApp thread takes a customer from enquiry to a committed booking with no human involved, and the audit record for it cites the rules the gate checked.
+10. A message whose `X-Hub-Signature-256` does not verify is rejected at the edge and produces no conversation state. Demonstrated by posting a forged body directly to the endpoint.
+11. The patch-test case blocks on the live thread and escalates to a human, with the escalation raised while the window is still open.
+
 ## 15. What this cannot claim
 
 | Claim | Why not |
@@ -251,7 +280,8 @@ Each is a command whose output is recorded, not a claim.
 | The test cases reflect real salon policy | Drafted then reviewed, not observed (A3). |
 | Escalations expire in practice | A2 is unmeasured. The simulated clock proves the *mechanism*, not the frequency. |
 | Policy in other industries is rule-shaped | A4 untested, and the one that would most damage the approach if false. |
-| The agent works on WhatsApp | The live transport is out of scope for v0 and unwired. Everything runs against the fake transport. |
+| The agent works on WhatsApp at any volume | One live thread demonstrates the path end to end. It does not exercise concurrency, retry storms, template rejection, quality-rating throttling, or a second customer. |
+| Check 6 predicts real deliverability | It models time and template approval. Meta's actual send decision also depends on quality rating and frequency caps, which are opaque. A live send that fails despite a check 6 pass is a finding, and the audit record is written so that it is a visible one. |
 
 ## 16. Module layout
 
@@ -267,9 +297,11 @@ whatsapp-commerce-agent/
     conversation/       state.py   queue.py   dedup.py
     extract/            base.py    fake.py    anthropic.py
     propose.py          gate.py    escalation.py    audit.py
-    transport/          base.py    fake.py    whatsapp.py (port only, unwired)
+    transport/          base.py    fake.py    whatsapp.py    webhook.py
     harness.py          cli.py
   tests/
 ```
 
 `gate.py` depends only on `models`, `rules`, and read-only views of calendar and window state. It imports nothing from `extract`, `transport` or `conversation`, which is what makes the purity test enforceable rather than aspirational.
+
+`transport/whatsapp.py` implements `TransportPort` against the Cloud API — send text, send interactive buttons, parse an inbound payload. `transport/webhook.py` is the FastAPI app: signature verification, the `GET` handshake, fast acknowledge, enqueue. **Only these two modules know WhatsApp exists** (PRD §8), which is what lets everything above them run against the fake transport.
