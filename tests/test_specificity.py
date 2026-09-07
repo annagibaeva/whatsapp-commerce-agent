@@ -1,13 +1,5 @@
-from pydantic import ValidationError
-
 from wca.rules.schema import Comparison, Group, Rule, RuleSet
-from wca.rules.specificity import (
-    check_decidable,
-    is_more_specific,
-    matching_rules,
-    outcomes_conflict,
-    unknown_rules,
-)
+from wca.rules.specificity import is_more_specific, matching_rules, unknown_rules
 
 COLOUR = Comparison(fact="service_category", op="eq", value="colour")
 FIRST = Comparison(fact="is_first_colour_visit", op="is_true")
@@ -56,70 +48,3 @@ def test_unknown_rules_are_reported_separately():
     facts = {"service_category": "colour"}
     assert {r.id for r in unknown_rules(rs, facts)} == {"patch_test"}
     assert {r.id for r in matching_rules(rs, facts)} == {"colour_allowed"}
-
-
-def test_deny_next_to_an_unrelated_permit_still_loads():
-    # Two rules on unrelated facts, no specificity relation, equal
-    # priority, one deny and one allow. This used to raise: deny was
-    # treated as conflicting with a permit and nothing ranked them. It no
-    # longer does, because the gate vetoes on any true deny directly
-    # (gate.py check 4), so there is nothing left for check_decidable to
-    # decide here.
-    a = _rule("a", Comparison(fact="x", op="eq", value=1), outcome_type="deny")
-    b = _rule("b", Comparison(fact="y", op="eq", value=2), outcome_type="allow")
-    check_decidable(RuleSet(rules=[a, b]))
-
-
-def test_a_priority_difference_between_deny_and_permit_still_loads():
-    a = _rule("a", Comparison(fact="x", op="eq", value=1), priority=1, outcome_type="deny")
-    b = _rule("b", Comparison(fact="y", op="eq", value=2), priority=0, outcome_type="allow")
-    check_decidable(RuleSet(rules=[a, b]))
-
-
-def test_two_permitting_rules_that_cannot_be_ranked_still_load():
-    """Two permits stacking is normal, not a policy bug, even when they
-    test unrelated facts with no specificity relation and equal priority."""
-    a = _rule("a", Comparison(fact="x", op="eq", value=1), outcome_type="allow")
-    b = _rule(
-        "b", Comparison(fact="y", op="eq", value=2),
-        outcome_type="require_lead_time",
-    )
-    check_decidable(RuleSet(rules=[a, b]))
-
-
-def test_deny_and_deposit_permit_at_equal_priority_still_loads():
-    a = _rule("a", Comparison(fact="x", op="eq", value=1), outcome_type="deny")
-    b = _rule(
-        "b", Comparison(fact="y", op="eq", value=2),
-        outcome_type="require_deposit",
-    )
-    check_decidable(RuleSet(rules=[a, b]))
-
-
-def test_deny_and_escalation_permit_at_different_priorities_loads():
-    a = _rule("a", Comparison(fact="x", op="eq", value=1), priority=1, outcome_type="deny")
-    b = _rule(
-        "b", Comparison(fact="y", op="eq", value=2), priority=0,
-        outcome_type="require_escalation",
-    )
-    check_decidable(RuleSet(rules=[a, b]))
-
-
-def test_outcomes_conflict_is_always_false_in_v0():
-    # deny is an absolute veto enforced by the gate itself, not by this
-    # ranking mechanism, so nothing counts as a conflict here any more.
-    deny = _rule("d", Comparison(fact="x", op="eq", value=1), outcome_type="deny")
-    allow = _rule("al", Comparison(fact="y", op="eq", value=2), outcome_type="allow")
-    lead_time = _rule(
-        "lt", Comparison(fact="z", op="eq", value=3), outcome_type="require_lead_time"
-    )
-    assert outcomes_conflict(deny, allow) is False
-    assert outcomes_conflict(deny, lead_time) is False
-    assert outcomes_conflict(allow, lead_time) is False
-    assert outcomes_conflict(deny, deny) is False
-
-
-def test_the_real_ruleset_is_decidable():
-    from wca.rules.store import load_ruleset
-
-    check_decidable(load_ruleset("policy/salon.rules.json"))

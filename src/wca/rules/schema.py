@@ -82,8 +82,10 @@ class Rule(_Strict):
     version: int = Field(ge=1)
     condition: Condition
     outcome: Outcome
-    # Read by check_decidable (rules/specificity.py) at load time to rank
-    # rules whose outcomes conflict and cannot be ordered by specificity.
+    # Was read by a load-time ranking guard (rules/specificity.py, since
+    # removed — see the comment in rules/store.py) to rank rules whose
+    # outcomes conflicted and could not be ordered by specificity. Kept
+    # on the schema in case a future outcome type needs that guard back.
     # The gate (gate.py) does NOT consult this field at booking time — it
     # is a load-time ranking tool only, never a runtime override. A wave-1
     # ruling once set no_colour_on_sunday's priority high believing that

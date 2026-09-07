@@ -143,6 +143,83 @@ def test_brute_force_no_citation_subset_books_over_a_matching_deny():
             )
 
 
+def test_check_4_vetoes_a_booking_when_a_deny_rules_facts_were_never_established():
+    # Nobody asked the weekday or the customer's age. no_colour_on_sunday
+    # and under_16_needs_guardian are both UNKNOWN, not FALSE, on these
+    # facts. A missing fact is not a no anywhere else in this module
+    # (check 3); the veto must honour that too, or an agent dodges deny
+    # for free by simply never establishing the fact a deny depends on.
+    p = _proposal(
+        ["deposit_over_threshold"],
+        {"service_category": "colour", "quoted_price_minor": 20000,
+         "hours_until_appointment": 200},
+    )
+    v = evaluate(p, RULES, FREE, DELIVERABLE)
+    assert v.allowed is False
+    assert v.check is GateCheck.BOOKING_CITES_RULE
+    assert v.kind is BlockKind.GROUNDING
+    assert "no_colour_on_sunday" in v.reason
+
+
+def test_check_4_lets_the_same_booking_through_once_the_facts_are_supplied():
+    # Same proposal as above, but with requested_weekday and customer_age
+    # now established and clean (tuesday, 30). Nothing denies it any
+    # more, so this proves the fix above is not over-broad: an
+    # UNKNOWN-but-inapplicable deny rule does not itself block bookings
+    # once its facts are known.
+    p = _proposal(
+        ["deposit_over_threshold"],
+        {"service_category": "colour", "quoted_price_minor": 20000,
+         "hours_until_appointment": 200, "requested_weekday": "tuesday",
+         "customer_age": 30, "is_first_colour_visit": False},
+    )
+    v = evaluate(p, RULES, FREE, DELIVERABLE)
+    assert v.allowed is True
+
+
+def test_brute_force_no_citation_subset_books_with_sparse_facts_that_leave_deny_unknown():
+    """Same brute force as the deny regression, but over sparse facts
+    that never establish requested_weekday or customer_age at all. Every
+    citation subset must still fail to book: an unestablished fact is not
+    a way past the veto."""
+    import itertools
+
+    facts = {
+        "service_category": "colour", "quoted_price_minor": 20000,
+        "hours_until_appointment": 200,
+    }
+    for n in range(len(RULES.rules) + 1):
+        for combo in itertools.combinations(RULES.rules, n):
+            p = _proposal_from_rules(combo, facts)
+            v = evaluate(p, RULES, FREE, DELIVERABLE)
+            assert not v.allowed, (
+                f"citing {[r.ref() for r in combo]} booked with the weekday and "
+                "age never established"
+            )
+
+
+def test_brute_force_no_citation_subset_books_over_a_matching_escalation():
+    """Escalation twin of the deny brute-force test. Over facts where
+    under_16_needs_guardian evaluates TRUE, try every possible subset of
+    the ruleset as the citation list. Not one subset may produce an
+    allowed 'book' verdict."""
+    import itertools
+
+    facts = {
+        "service_category": "colour", "customer_age": 12,
+        "is_first_colour_visit": False, "quoted_price_minor": 9000,
+        "requested_weekday": "tuesday", "hours_until_appointment": 200,
+    }
+    for n in range(len(RULES.rules) + 1):
+        for combo in itertools.combinations(RULES.rules, n):
+            p = _proposal_from_rules(combo, facts)
+            v = evaluate(p, RULES, FREE, DELIVERABLE)
+            assert not v.allowed, (
+                f"citing {[r.ref() for r in combo]} booked over a matching "
+                "require_escalation"
+            )
+
+
 def test_check_5_blocks_when_the_hold_is_gone():
     p = _proposal(
         ["colour_allowed"],

@@ -91,10 +91,24 @@ def evaluate(
     #      have gone to a human is not a booking either, cited or not.
     #   d. no CITED rule's require_lead_time is unmet.
     #
-    # (b) and (c) is why rules/specificity.check_decidable no longer
-    # treats deny as conflicting with a permit at equal priority: the gate
-    # itself vetoes on any true deny, unconditionally, so there is nothing
-    # left for a priority to rank.
+    # (b) and (c) also veto on UNKNOWN, not only TRUE. A deny or
+    # require_escalation rule whose facts were never established is not
+    # a "no" the way a missing fact never is anywhere else in this
+    # module (see check 3, and rules/evaluate.py's own docstring on why
+    # UNKNOWN must not collapse to FALSE) — but it is also not a proven
+    # "yes", and the veto only needs proof that deny does NOT apply, which
+    # an unestablished fact cannot supply. Skipping unknowns here would
+    # let an agent dodge the veto for free by simply never asking the
+    # question a deny rule depends on (never asking the weekday, never
+    # asking the customer's age), which is worse than citing a narrow
+    # subset: it is not naming a fact at all.
+    #
+    # (b) and (c) is why the load-time ranking guard that used to live in
+    # rules/specificity.py (and ran from rules/store.py) was removed: it
+    # treated deny as conflicting with a permit at equal priority, but the
+    # gate itself vetoes on any true deny, unconditionally, so there was
+    # nothing left for a priority to rank. See the comment in
+    # rules/store.py for the removal itself.
     #
     # require_deposit is deliberately not enforced here. The PRD says v0
     # evaluates the deposit rule and stops short of collecting a deposit.
@@ -117,12 +131,31 @@ def evaluate(
                     f"{rule.ref()} denies this booking: {rule.outcome.reason}",
                 )
 
+        for rule in unknown_rules(ruleset, facts):
+            if rule.outcome.type == "deny":
+                gaps = ", ".join(missing_facts(rule, facts))
+                return Verdict.blocked(
+                    GateCheck.BOOKING_CITES_RULE,
+                    BlockKind.GROUNDING,
+                    f"{rule.ref()} might deny this booking and we never established {gaps}",
+                )
+
         for rule in matching_rules(ruleset, facts):
             if rule.outcome.type == "require_escalation":
                 return Verdict.blocked(
                     GateCheck.BOOKING_CITES_RULE,
                     BlockKind.GROUNDING,
                     f"{rule.ref()} requires escalation to a human: {rule.outcome.reason}",
+                )
+
+        for rule in unknown_rules(ruleset, facts):
+            if rule.outcome.type == "require_escalation":
+                gaps = ", ".join(missing_facts(rule, facts))
+                return Verdict.blocked(
+                    GateCheck.BOOKING_CITES_RULE,
+                    BlockKind.GROUNDING,
+                    f"{rule.ref()} might require escalation to a human and we never "
+                    f"established {gaps}",
                 )
 
         for rule in cited:
