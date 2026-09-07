@@ -39,17 +39,16 @@ def test_prices_cover_both_models():
     assert PRICES[LARGE_MODEL] == {"input": 5.00, "output": 25.00}
 
 
-def test_a_missing_key_fails_with_a_message_that_says_what_to_do():
-    import os
-
+def test_a_missing_key_fails_with_a_message_that_says_what_to_do(monkeypatch):
     import pytest
 
-    from wca.extract.anthropic import AnthropicExtractor
+    from wca.extract import anthropic as anthropic_module
 
-    saved = os.environ.pop("ANTHROPIC_API_KEY", None)
-    try:
-        with pytest.raises(RuntimeError, match=r"\.env"):
-            AnthropicExtractor()
-    finally:
-        if saved is not None:
-            os.environ["ANTHROPIC_API_KEY"] = saved
+    # __init__ calls load_dotenv() first, which would read the key back out
+    # of a real .env on disk. Neutralise it so this tests the code path and
+    # not whether the developer happens to have credentials configured.
+    monkeypatch.setattr(anthropic_module, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match=r"\.env"):
+        anthropic_module.AnthropicExtractor()
