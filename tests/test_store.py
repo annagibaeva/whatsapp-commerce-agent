@@ -27,7 +27,7 @@ def test_an_undecidable_file_fails_to_load(tmp_path):
     bad = tmp_path / "tie.json"
     bad.write_text(json.dumps({"rules": [
         {"id": "a", "version": 1, "condition": {"fact": "x", "op": "eq", "value": 1},
-         "outcome": {"type": "allow", "reason": "r"}, "source_text": "s"},
+         "outcome": {"type": "deny", "reason": "r"}, "source_text": "s"},
         {"id": "b", "version": 1, "condition": {"fact": "y", "op": "eq", "value": 2},
          "outcome": {"type": "allow", "reason": "r"}, "source_text": "s"},
     ]}), encoding="utf-8")

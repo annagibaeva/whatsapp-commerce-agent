@@ -31,23 +31,43 @@ def unknown_rules(ruleset: RuleSet, facts: dict[str, Any]) -> tuple[Rule, ...]:
     return tuple(r for r in ruleset.rules if evaluate_rule(r, facts) is Tri.UNKNOWN)
 
 
-def check_decidable(ruleset: RuleSet) -> None:
-    """Fail if two rules could both apply and nothing can rank them.
+def outcomes_conflict(a: Rule, b: Rule) -> bool:
+    """True when two rules' outcomes cannot both apply to one booking.
 
-    A policy that cannot say which of two rules applies is a bug in the
-    policy. Better to find it now than when a customer is booking.
+    At v0 the only outcome that conflicts with another is `deny`: it means
+    refuse the booking, which cannot stand next to `allow` or a permit that
+    adds a condition (`require_lead_time`, `require_deposit`,
+    `require_escalation`) instead of refusing. Two permits are fine
+    together and are expected to stack, so `allow` next to
+    `require_deposit` next to `require_lead_time` is not a conflict.
+    """
+    types = {a.outcome.type, b.outcome.type}
+    return "deny" in types and len(types) == 2
+
+
+def check_decidable(ruleset: RuleSet) -> None:
+    """Fail if two rules could both apply, cannot be ranked, and disagree.
+
+    Two rules matching the same booking is normal and expected: a
+    first-time customer over the deposit threshold should get both the
+    patch-test lead time and the deposit requirement. That is not a bug,
+    so it does not raise here.
+
+    It is a bug when one rule says deny and the other says allow (or any
+    of the permit outcomes) and nothing decides which one wins: neither
+    rule is more specific, and their priorities are equal. Whether the two
+    rules' fact sets overlap or not makes no difference to how dangerous
+    this is, so it plays no part in the check.
     """
     for a, b in combinations(ruleset.rules, 2):
         if is_more_specific(a, b) or is_more_specific(b, a):
             continue
-        # Rules that share at least one fact are related enough that a
-        # human reading the policy can tell them apart. Two rules that
-        # test entirely different facts, with no specificity relation and
-        # no priority to break the tie, cannot be ranked at all.
-        if set(a.requires_facts) & set(b.requires_facts):
+        if a.priority != b.priority:
             continue
-        if a.priority == b.priority:
-            raise ValueError(
-                f"cannot decide between {a.ref()} and {b.ref()}: they test "
-                "unrelated facts and have the same priority"
-            )
+        if not outcomes_conflict(a, b):
+            continue
+        raise ValueError(
+            f"cannot decide between {a.ref()} and {b.ref()}: their outcomes "
+            "conflict, neither is more specific, and their priorities are "
+            "equal. Set a priority to rank them."
+        )
