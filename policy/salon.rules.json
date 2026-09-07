@@ -1,0 +1,56 @@
+{
+  "rules": [
+    {
+      "id": "colour_allowed",
+      "version": 1,
+      "condition": {"fact": "service_category", "op": "eq", "value": "colour"},
+      "outcome": {"type": "allow", "reason": "colour appointments are offered"},
+      "priority": 0,
+      "source_text": "We offer colour appointments."
+    },
+    {
+      "id": "patch_test_first_colour",
+      "version": 1,
+      "condition": {"all": [
+        {"fact": "service_category", "op": "eq", "value": "colour"},
+        {"fact": "is_first_colour_visit", "op": "is_true"}
+      ]},
+      "outcome": {"type": "require_lead_time", "hours": 48, "reason": "patch test"},
+      "priority": 0,
+      "source_text": "First-time colour clients must patch test 48 hours before their appointment."
+    },
+    {
+      "id": "deposit_over_threshold",
+      "version": 1,
+      "condition": {"all": [
+        {"fact": "service_category", "op": "eq", "value": "colour"},
+        {"fact": "quoted_price_minor", "op": "gte", "value": 15000}
+      ]},
+      "outcome": {"type": "require_deposit", "amount_minor": 5000, "reason": "deposit on services over 150"},
+      "priority": 0,
+      "source_text": "Services over 150 require a 50 deposit."
+    },
+    {
+      "id": "under_16_needs_guardian",
+      "version": 1,
+      "condition": {"all": [
+        {"fact": "service_category", "op": "eq", "value": "colour"},
+        {"fact": "customer_age", "op": "lt", "value": 16}
+      ]},
+      "outcome": {"type": "require_escalation", "reason": "under 16 needs a guardian present"},
+      "priority": 0,
+      "source_text": "Clients under 16 need a guardian present for colour."
+    },
+    {
+      "id": "no_colour_on_sunday",
+      "version": 3,
+      "condition": {"all": [
+        {"fact": "service_category", "op": "eq", "value": "colour"},
+        {"fact": "requested_weekday", "op": "eq", "value": "sunday"}
+      ]},
+      "outcome": {"type": "deny", "reason": "the colour technician does not work Sundays"},
+      "priority": 0,
+      "source_text": "No colour appointments on Sundays."
+    }
+  ]
+}

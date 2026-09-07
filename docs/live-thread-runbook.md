@@ -1,0 +1,81 @@
+# Live thread runbook
+
+Steps to run one real WhatsApp conversation through this codebase: receive a message, print it, send one back, and confirm a forged webhook is rejected.
+
+This runbook assumes a working WhatsApp test number, a permanent System User access token, and an app secret, already set up in Meta's console. It does not cover creating those.
+
+## 1. `.env`
+
+Create a `.env` file in the project root with five values:
+
+```
+WHATSAPP_PHONE_NUMBER_ID=...
+WHATSAPP_ACCESS_TOKEN=...
+WHATSAPP_APP_SECRET=...
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=...
+ANTHROPIC_API_KEY=...
+```
+
+`WHATSAPP_ACCESS_TOKEN` should be the permanent System User token, not the 24-hour token shown on Meta's API Setup page.
+
+Save the file as UTF-8 **without a byte-order mark**. Several editors on Windows save plain text files with a BOM by default. If the file has one, it attaches itself to the first key name in the file. The line that reads `WHATSAPP_PHONE_NUMBER_ID=...` on screen is actually stored as `﻿WHATSAPP_PHONE_NUMBER_ID=...`, and `os.environ.get("WHATSAPP_PHONE_NUMBER_ID")` then returns `None`, even though the file plainly sets it. If the first value in `.env` behaves as if it were never set while the others work, this is the first thing to check.
+
+## 2. Start a tunnel
+
+```bash
+cloudflared tunnel --url http://localhost:8000
+```
+
+Note the `https://...trycloudflare.com` URL it prints. It is needed in step 4.
+
+## 3. Start the receiver
+
+```bash
+uv run wca serve
+```
+
+This reads `WHATSAPP_APP_SECRET` and `WHATSAPP_WEBHOOK_VERIFY_TOKEN` from `.env` and starts the webhook receiver on port 8000.
+
+## 4. Configure the webhook in Meta's console
+
+In Meta's console: **WhatsApp → Configuration → Webhooks → Edit**.
+
+- Paste the tunnel URL from step 2 with `/webhook` appended, for example `https://your-tunnel.trycloudflare.com/webhook`.
+- Paste the verify token, the same value as `WHATSAPP_WEBHOOK_VERIFY_TOKEN` in `.env`.
+- Save.
+
+**Then subscribe to the `messages` field.** This is a separate click from Save, in the field subscription list below the webhook URL. It is easy to save the URL and stop there; if no messages arrive at the receiver despite a saved, verified webhook, this is the step to check first.
+
+## 5. Message the test number
+
+Send a WhatsApp message to the test number from a phone. The receiver process prints the thread ID and the text of the message it received.
+
+## 6. Send one back
+
+```bash
+uv run wca send --to <your number, digits only, full international form> --text "hello"
+```
+
+This reads `WHATSAPP_PHONE_NUMBER_ID` and `WHATSAPP_ACCESS_TOKEN` from `.env` and sends one text message through the Cloud API.
+
+## 7. Confirm a forged webhook is rejected
+
+With the receiver still running, post a request with a bad signature:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "$TUNNEL_URL/webhook" \
+  -H "X-Hub-Signature-256: sha256=deadbeef" \
+  -H "Content-Type: application/json" \
+  -d '{"object":"whatsapp_business_account","entry":[]}'
+```
+
+Set `TUNNEL_URL` to the tunnel URL from step 2 first, or substitute it directly. Expected result: `403`. The receiver never parses the body of a request whose signature does not match.
+
+## 8. Two things that expire
+
+- The free `cloudflared` tunnel URL changes every time the tunnel is restarted. After a restart, step 4 has to be repeated: the new URL has to be re-saved in Meta's console.
+- The free WhatsApp test number lasts 90 days from when it was created. After that it stops working and a new one has to be requested.
+
+## 9. Check the Graph API version before going live
+
+`GRAPH_VERSION` in `src/wca/transport/whatsapp.py` is currently `v23.0`. Before running any of this, compare it against the version shown in the curl example on Meta's WhatsApp API Setup page for this app. Meta moves this version over time. A stale version does not fail with an obvious "wrong version" error; it fails in ways that look like a bug in this code (a 400, or a field Meta says does not exist). If a call to `send` or a webhook fails for no clear reason, check this first.
