@@ -76,9 +76,25 @@ def evaluate(
                 f"{rule.ref()} might apply but we never established {gaps}",
             )
 
-    # 4. The cited rules must actually permit this booking. That takes two
-    # things: at least one cited rule allows a booking, and no cited rule
-    # imposes a requirement that is unmet.
+    # 4. The rules must actually permit *this* booking. That takes all of:
+    #
+    #   a. at least one CITED rule permits it (allow or require_deposit).
+    #   b. no rule anywhere in the ruleset that evaluates TRUE on these
+    #      facts has outcome deny. Deny is an absolute veto: it does not
+    #      matter whether the agent cited it, because a booking the
+    #      policy forbids is forbidden regardless of what got quoted in
+    #      support of it. This is what closes the hole where citing a
+    #      narrower subset of rules dodges a deny that plainly applies —
+    #      checking every rule, not only the cited ones, is the point.
+    #   c. no rule anywhere in the ruleset that evaluates TRUE on these
+    #      facts has outcome require_escalation. A booking that should
+    #      have gone to a human is not a booking either, cited or not.
+    #   d. no CITED rule's require_lead_time is unmet.
+    #
+    # (b) and (c) is why rules/specificity.check_decidable no longer
+    # treats deny as conflicting with a permit at equal priority: the gate
+    # itself vetoes on any true deny, unconditionally, so there is nothing
+    # left for a priority to rank.
     #
     # require_deposit is deliberately not enforced here. The PRD says v0
     # evaluates the deposit rule and stops short of collecting a deposit.
@@ -93,6 +109,22 @@ def evaluate(
                 "no cited rule allows a booking",
             )
 
+        for rule in matching_rules(ruleset, facts):
+            if rule.outcome.type == "deny":
+                return Verdict.blocked(
+                    GateCheck.BOOKING_CITES_RULE,
+                    BlockKind.GROUNDING,
+                    f"{rule.ref()} denies this booking: {rule.outcome.reason}",
+                )
+
+        for rule in matching_rules(ruleset, facts):
+            if rule.outcome.type == "require_escalation":
+                return Verdict.blocked(
+                    GateCheck.BOOKING_CITES_RULE,
+                    BlockKind.GROUNDING,
+                    f"{rule.ref()} requires escalation to a human: {rule.outcome.reason}",
+                )
+
         for rule in cited:
             if rule.outcome.type != "require_lead_time" or rule.outcome.hours is None:
                 continue
@@ -105,7 +137,21 @@ def evaluate(
                     "established hours_until_appointment",
                 )
             available = facts["hours_until_appointment"]
-            if available < needed:
+            try:
+                unmet = available < needed
+            except TypeError:
+                # A non-numeric hours_until_appointment (bad upstream data,
+                # not a policy question) is a fact we cannot trust, not a
+                # crash. rules/evaluate.py treats the same hazard as
+                # UNKNOWN via a try/except; the gate blocks the same way
+                # rather than raising past its caller.
+                return Verdict.blocked(
+                    GateCheck.BOOKING_CITES_RULE,
+                    BlockKind.GROUNDING,
+                    f"{rule.ref()} requires {needed} hours lead time and "
+                    f"hours_until_appointment ({available!r}) cannot be compared to it",
+                )
+            if unmet:
                 return Verdict.blocked(
                     GateCheck.BOOKING_CITES_RULE,
                     BlockKind.GROUNDING,

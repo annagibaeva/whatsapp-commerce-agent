@@ -32,17 +32,27 @@ def unknown_rules(ruleset: RuleSet, facts: dict[str, Any]) -> tuple[Rule, ...]:
 
 
 def outcomes_conflict(a: Rule, b: Rule) -> bool:
-    """True when two rules' outcomes cannot both apply to one booking.
+    """True when two rules' outcomes cannot both apply to one booking and
+    the *ranking mechanism below* (specificity, then priority) is what
+    would need to settle it.
 
-    At v0 the only outcome that conflicts with another is `deny`: it means
-    refuse the booking, which cannot stand next to `allow` or a permit that
-    adds a condition (`require_lead_time`, `require_deposit`,
-    `require_escalation`) instead of refusing. Two permits are fine
-    together and are expected to stack, so `allow` next to
-    `require_deposit` next to `require_lead_time` is not a conflict.
+    At v0 this always returns False. `deny` used to be listed here as
+    conflicting with `allow` or a permit, on the theory that whichever
+    outcome ranked higher should win. That theory was wrong: the gate
+    (see gate.py check 4) now treats any rule that evaluates true with
+    outcome `deny` as an absolute veto over a `book` action, regardless
+    of whether it was cited and regardless of any other rule's priority
+    or specificity. A deny next to a permit is therefore never ambiguous
+    — deny always wins — so it is not a conflict for this function to
+    catch, and priority plays no part in resolving it (see the comment on
+    `priority` in rules/schema.py).
+
+    The function, and check_decidable's use of it, stay in place as a
+    guard for a future outcome type that might introduce real ambiguity
+    (two outcomes that could both apply, disagree, and are not settled by
+    the gate itself). Nothing in v0's outcome set needs it.
     """
-    types = {a.outcome.type, b.outcome.type}
-    return "deny" in types and len(types) == 2
+    return False
 
 
 def check_decidable(ruleset: RuleSet) -> None:
@@ -53,11 +63,11 @@ def check_decidable(ruleset: RuleSet) -> None:
     patch-test lead time and the deposit requirement. That is not a bug,
     so it does not raise here.
 
-    It is a bug when one rule says deny and the other says allow (or any
-    of the permit outcomes) and nothing decides which one wins: neither
-    rule is more specific, and their priorities are equal. Whether the two
-    rules' fact sets overlap or not makes no difference to how dangerous
-    this is, so it plays no part in the check.
+    `deny` is not a case this needs to catch (see outcomes_conflict): the
+    gate vetoes on any true deny unconditionally, so a deny sitting next
+    to a permit needs no ranking and is not treated as a conflict here.
+    This function remains as a guard for any future outcome type that
+    really would need a priority or specificity relation to resolve.
     """
     for a, b in combinations(ruleset.rules, 2):
         if is_more_specific(a, b) or is_more_specific(b, a):

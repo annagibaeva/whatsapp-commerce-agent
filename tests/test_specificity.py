@@ -1,4 +1,3 @@
-import pytest
 from pydantic import ValidationError
 
 from wca.rules.schema import Comparison, Group, Rule, RuleSet
@@ -59,14 +58,19 @@ def test_unknown_rules_are_reported_separately():
     assert {r.id for r in matching_rules(rs, facts)} == {"colour_allowed"}
 
 
-def test_two_rules_that_cannot_be_ranked_fail_to_load():
+def test_deny_next_to_an_unrelated_permit_still_loads():
+    # Two rules on unrelated facts, no specificity relation, equal
+    # priority, one deny and one allow. This used to raise: deny was
+    # treated as conflicting with a permit and nothing ranked them. It no
+    # longer does, because the gate vetoes on any true deny directly
+    # (gate.py check 4), so there is nothing left for check_decidable to
+    # decide here.
     a = _rule("a", Comparison(fact="x", op="eq", value=1), outcome_type="deny")
     b = _rule("b", Comparison(fact="y", op="eq", value=2), outcome_type="allow")
-    with pytest.raises(ValueError, match="cannot decide"):
-        check_decidable(RuleSet(rules=[a, b]))
+    check_decidable(RuleSet(rules=[a, b]))
 
 
-def test_a_priority_difference_makes_a_tie_decidable():
+def test_a_priority_difference_between_deny_and_permit_still_loads():
     a = _rule("a", Comparison(fact="x", op="eq", value=1), priority=1, outcome_type="deny")
     b = _rule("b", Comparison(fact="y", op="eq", value=2), priority=0, outcome_type="allow")
     check_decidable(RuleSet(rules=[a, b]))
@@ -83,17 +87,16 @@ def test_two_permitting_rules_that_cannot_be_ranked_still_load():
     check_decidable(RuleSet(rules=[a, b]))
 
 
-def test_deny_and_permit_at_equal_priority_raise():
+def test_deny_and_deposit_permit_at_equal_priority_still_loads():
     a = _rule("a", Comparison(fact="x", op="eq", value=1), outcome_type="deny")
     b = _rule(
         "b", Comparison(fact="y", op="eq", value=2),
         outcome_type="require_deposit",
     )
-    with pytest.raises(ValueError, match="cannot decide"):
-        check_decidable(RuleSet(rules=[a, b]))
+    check_decidable(RuleSet(rules=[a, b]))
 
 
-def test_deny_and_permit_at_different_priorities_loads():
+def test_deny_and_escalation_permit_at_different_priorities_loads():
     a = _rule("a", Comparison(fact="x", op="eq", value=1), priority=1, outcome_type="deny")
     b = _rule(
         "b", Comparison(fact="y", op="eq", value=2), priority=0,
@@ -102,14 +105,16 @@ def test_deny_and_permit_at_different_priorities_loads():
     check_decidable(RuleSet(rules=[a, b]))
 
 
-def test_outcomes_conflict_only_for_deny_against_a_permit():
+def test_outcomes_conflict_is_always_false_in_v0():
+    # deny is an absolute veto enforced by the gate itself, not by this
+    # ranking mechanism, so nothing counts as a conflict here any more.
     deny = _rule("d", Comparison(fact="x", op="eq", value=1), outcome_type="deny")
     allow = _rule("al", Comparison(fact="y", op="eq", value=2), outcome_type="allow")
     lead_time = _rule(
         "lt", Comparison(fact="z", op="eq", value=3), outcome_type="require_lead_time"
     )
-    assert outcomes_conflict(deny, allow) is True
-    assert outcomes_conflict(deny, lead_time) is True
+    assert outcomes_conflict(deny, allow) is False
+    assert outcomes_conflict(deny, lead_time) is False
     assert outcomes_conflict(allow, lead_time) is False
     assert outcomes_conflict(deny, deny) is False
 

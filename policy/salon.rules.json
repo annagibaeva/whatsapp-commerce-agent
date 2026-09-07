@@ -43,13 +43,13 @@
     },
     {
       "id": "no_colour_on_sunday",
-      "version": 2,
+      "version": 3,
       "condition": {"all": [
         {"fact": "service_category", "op": "eq", "value": "colour"},
         {"fact": "requested_weekday", "op": "eq", "value": "sunday"}
       ]},
       "outcome": {"type": "deny", "reason": "the colour technician does not work Sundays"},
-      "priority": 10,
+      "priority": 0,
       "source_text": "No colour appointments on Sundays."
     }
   ]

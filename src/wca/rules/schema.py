@@ -82,6 +82,15 @@ class Rule(_Strict):
     version: int = Field(ge=1)
     condition: Condition
     outcome: Outcome
+    # Read by check_decidable (rules/specificity.py) at load time to rank
+    # rules whose outcomes conflict and cannot be ordered by specificity.
+    # The gate (gate.py) does NOT consult this field at booking time — it
+    # is a load-time ranking tool only, never a runtime override. A wave-1
+    # ruling once set no_colour_on_sunday's priority high believing that
+    # would make its deny outrank a permit at booking time; it does not,
+    # because the gate never reads priority, and the bug that ruling was
+    # meant to fix (a subset-citation could still book over an applicable
+    # deny) was not fixed until the gate itself vetoed on deny directly.
     priority: int = 0
     source_text: str
     requires_facts: tuple[str, ...] = ()
