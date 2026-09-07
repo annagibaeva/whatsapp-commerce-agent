@@ -23,7 +23,7 @@ import json
 from typing import Callable
 
 from fastapi import FastAPI, Request, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from wca.transport.base import InboundMessage
 from wca.transport.whatsapp import parse_inbound
@@ -31,20 +31,31 @@ from wca.transport.whatsapp import parse_inbound
 
 class WebhookSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    app_secret: str
+    app_secret: SecretStr
     verify_token: str
 
     def __repr__(self) -> str:
-        # Never put the secret in a repr. Reprs end up in logs, and
-        # pydantic's default repr prints every field in full.
+        # SecretStr already keeps app_secret out of pydantic's default
+        # field-by-field repr, and (unlike a __repr__-only guard on a
+        # plain class such as WhatsAppTransport) out of str(settings),
+        # f"{settings}", model_dump() and JSON serialisation too, since
+        # a pydantic BaseModel defines __str__ separately from __repr__
+        # and both walk every field. This override is belt-and-braces:
+        # it also keeps verify_token — not itself the secret this fix
+        # targets, but not useful in a log line either — out of ad hoc
+        # prints, matching the precedent it was copied from.
         return "WebhookSettings(app_secret=***, verify_token=***)"
 
+    __str__ = __repr__
 
-def verify_signature(app_secret: str, raw_body: bytes, header: str | None) -> bool:
+
+def verify_signature(app_secret: SecretStr, raw_body: bytes, header: str | None) -> bool:
     """Constant-time check of the X-Hub-Signature-256 header."""
     if not header or not header.startswith("sha256="):
         return False
-    expected = hmac.new(app_secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    expected = hmac.new(
+        app_secret.get_secret_value().encode(), raw_body, hashlib.sha256
+    ).hexdigest()
     return hmac.compare_digest(expected, header[len("sha256="):])
 
 

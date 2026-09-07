@@ -105,3 +105,16 @@ def test_the_app_secret_never_appears_in_the_repr():
     # did not.
     assert SECRET not in repr(SETTINGS)
     assert VERIFY_TOKEN not in repr(SETTINGS)
+
+
+def test_the_app_secret_never_appears_in_str_or_model_dump():
+    # A pydantic BaseModel defines __str__ separately from __repr__, so
+    # a __repr__-only guard still leaked the secret through str(),
+    # f"{...}", and the ordinary logger.info("...=%s", settings) path.
+    # SecretStr closes str(), f-string formatting and model_dump() (and
+    # therefore JSON serialisation) all at once.
+    assert SECRET not in str(SETTINGS)
+    assert SECRET not in f"{SETTINGS}"
+    dumped = SETTINGS.model_dump()
+    assert SECRET not in json.dumps(dumped, default=str)
+    assert SECRET != dumped["app_secret"]
