@@ -24,6 +24,19 @@ def _proposal(cited, facts, action=None, thread="t1", versions=None):
     )
 
 
+def _proposal_from_rules(rules, facts, action=None, thread="t1"):
+    """Like _proposal, but cites actual Rule objects at their real version."""
+    return Proposal(
+        proposal_id="prop_0001",
+        thread_id=thread,
+        action=action or Action(type="book", slot_id="s1"),
+        cited_rules=tuple(CitedRule(rule_id=r.id, version=r.version) for r in rules),
+        facts=facts,
+        created_at=NOW,
+        hold_id="hold_0001",
+    )
+
+
 def test_a_clean_booking_passes():
     p = _proposal(
         ["colour_allowed"],
@@ -79,17 +92,55 @@ def test_check_4_blocks_a_booking_that_cites_nothing():
     assert v.check is GateCheck.BOOKING_CITES_RULE
 
 
-def test_check_4_blocks_a_booking_whose_only_rule_denies_it():
-    # no_colour_on_sunday is version 2 in the live ruleset: a wave-1 ruling
-    # gave it priority 10 and bumped the version when the record changed.
+def test_check_4_vetoes_a_booking_that_cites_a_permit_and_the_deny_that_applies():
+    # no_colour_on_sunday is version 3 in the live ruleset: a wave-1
+    # ruling gave it priority 10 believing that would make its deny
+    # outrank a permit, bumped the version, and was wrong — the gate
+    # never reads priority. Fix wave 2 set priority back to 0 and made
+    # the gate veto on any true deny directly (bumping the version again
+    # to 3 because the record changed again).
+    #
+    # This must cite a PERMITTING rule alongside the deny. Citing only
+    # the deny rule (as this test used to) passes through the "no cited
+    # rule allows a booking" branch, where the deny outcome never gets a
+    # chance to matter — a reviewer proved that by changing the rule's
+    # outcome to require_escalation in the policy file and watching the
+    # old version of this test stay green. With a permit cited too, the
+    # only thing left that can block this proposal is the veto.
     p = _proposal(
-        ["no_colour_on_sunday"],
+        ["colour_allowed", "no_colour_on_sunday"],
         {"service_category": "colour", "requested_weekday": "sunday",
          "is_first_colour_visit": False, "quoted_price_minor": 9000, "customer_age": 30},
-        versions={"no_colour_on_sunday": 2},
+        versions={"no_colour_on_sunday": 3},
     )
     v = evaluate(p, RULES, FREE, DELIVERABLE)
     assert v.check is GateCheck.BOOKING_CITES_RULE
+    assert v.kind is BlockKind.GROUNDING
+    assert "no_colour_on_sunday" in v.reason
+
+
+def test_brute_force_no_citation_subset_books_over_a_matching_deny():
+    """The regression test that would have caught the original bug.
+
+    Over the shipped policy, with facts where no_colour_on_sunday matches,
+    try every possible subset of the ruleset as the citation list. Not one
+    subset may produce an allowed 'book' verdict — deny is a veto no
+    matter what the agent chooses to cite.
+    """
+    import itertools
+
+    facts = {
+        "service_category": "colour", "requested_weekday": "sunday",
+        "is_first_colour_visit": False, "quoted_price_minor": 9000,
+        "customer_age": 30, "hours_until_appointment": 200,
+    }
+    for n in range(len(RULES.rules) + 1):
+        for combo in itertools.combinations(RULES.rules, n):
+            p = _proposal_from_rules(combo, facts)
+            v = evaluate(p, RULES, FREE, DELIVERABLE)
+            assert not v.allowed, (
+                f"citing {[r.ref() for r in combo]} booked over a matching deny"
+            )
 
 
 def test_check_5_blocks_when_the_hold_is_gone():
@@ -148,3 +199,20 @@ def test_checks_run_in_order_and_report_the_first_failure():
 def test_the_gate_gives_the_same_answer_twice():
     p = _proposal(["colour_allowed"], {"service_category": "cut"})
     assert evaluate(p, RULES, FREE, DELIVERABLE) == evaluate(p, RULES, FREE, DELIVERABLE)
+
+
+def test_a_non_numeric_hours_until_appointment_blocks_instead_of_raising():
+    # rules/evaluate.py already treats this hazard as UNKNOWN via a
+    # try/except around the comparison. The gate's own lead-time check
+    # did the comparison directly and raised TypeError instead of
+    # returning a Verdict.
+    p = _proposal(
+        ["colour_allowed", "patch_test_first_colour"],
+        {"service_category": "colour", "is_first_colour_visit": True,
+         "quoted_price_minor": 9000, "customer_age": 30, "requested_weekday": "tuesday",
+         "hours_until_appointment": "lots"},
+    )
+    v = evaluate(p, RULES, FREE, DELIVERABLE)
+    assert v.allowed is False
+    assert v.check is GateCheck.BOOKING_CITES_RULE
+    assert v.kind is BlockKind.GROUNDING
