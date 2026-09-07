@@ -97,3 +97,11 @@ def test_a_status_only_callback_is_accepted_but_delivers_nothing():
     r = _client(seen).post("/webhook", content=body, headers={"X-Hub-Signature-256": _sign(body)})
     assert r.status_code == 200
     assert seen == []
+
+
+def test_the_app_secret_never_appears_in_the_repr():
+    # pydantic's default repr prints every field in full, and reprs end
+    # up in logs. WhatsAppTransport already guards its repr; this model
+    # did not.
+    assert SECRET not in repr(SETTINGS)
+    assert VERIFY_TOKEN not in repr(SETTINGS)

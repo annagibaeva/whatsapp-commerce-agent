@@ -34,6 +34,11 @@ class WebhookSettings(BaseModel):
     app_secret: str
     verify_token: str
 
+    def __repr__(self) -> str:
+        # Never put the secret in a repr. Reprs end up in logs, and
+        # pydantic's default repr prints every field in full.
+        return "WebhookSettings(app_secret=***, verify_token=***)"
+
 
 def verify_signature(app_secret: str, raw_body: bytes, header: str | None) -> bool:
     """Constant-time check of the X-Hub-Signature-256 header."""
