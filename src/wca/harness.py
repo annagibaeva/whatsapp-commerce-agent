@@ -18,8 +18,10 @@ from wca.cases import Case, CaseFile
 from wca.clock import utc
 from wca.escalation import TemplateRegistry, window_view
 from wca.gate import evaluate
-from wca.models import BlockKind, Verdict
+from wca.ids import idempotency_key as make_idempotency_key
+from wca.models import AuditRecord, BlockKind, Verdict
 from wca.propose import propose
+from wca.rules.render import to_english
 from wca.rules.schema import RuleSet
 
 START = utc(2026, 8, 21, 9)
@@ -43,6 +45,10 @@ class HarnessReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     gate_on: bool
     outcomes: tuple[CaseOutcome, ...]
+    #: One audit record per case, spec section 14 criterion 8: every
+    #: case's record must name rule_id@version for what it cited and the
+    #: ruleset_version that was live when it was decided.
+    audit_records: tuple[AuditRecord, ...] = ()
 
     @property
     def total(self) -> int:
@@ -84,6 +90,7 @@ def run_cases(
     cases: CaseFile, ruleset: RuleSet, registry: TemplateRegistry, gate_on: bool
 ) -> HarnessReport:
     outcomes: list[CaseOutcome] = []
+    audit_records: list[AuditRecord] = []
 
     for index, case in enumerate(cases.cases, start=1):
         calendar = MockCalendar(slot_ids=[GOOD_SLOT, TAKEN_SLOT])
@@ -116,7 +123,20 @@ def run_cases(
         else:
             verdict = Verdict.passed()
 
-        booked = verdict.allowed and proposal.action.type == "book"
+        # A booking only counts as completed if we actually commit it.
+        # Reporting "booked" off the verdict alone (as before) counted
+        # bookings that were never written to the calendar at all.
+        booked = False
+        if verdict.allowed and proposal.action.type == "book" and hold_id is not None:
+            key = make_idempotency_key(
+                case.id, "book", {"proposal_id": proposal.proposal_id, "slot_id": case.slot_id}
+            )
+            try:
+                calendar.commit(hold_id, idempotency_key=key, now=now)
+                booked = True
+            except Exception:  # noqa: BLE001
+                booked = False
+
         outcomes.append(CaseOutcome(
             case_id=case.id,
             tier=case.tier,
@@ -131,4 +151,20 @@ def run_cases(
             bad_booking=booked and case.would_be_bad_booking,
         ))
 
-    return HarnessReport(gate_on=gate_on, outcomes=tuple(outcomes))
+        cited_rules = [
+            rule for rule in (
+                ruleset.get(ref.rule_id, ref.version) for ref in proposal.cited_rules
+            )
+            if rule is not None
+        ]
+        audit_records.append(AuditRecord(
+            proposal=proposal,
+            verdict=verdict,
+            ruleset_version=ruleset.ruleset_version,
+            rules_english=tuple(to_english(rule.condition) for rule in cited_rules),
+            calendar_read=cal_view,
+            window_read=win_view,
+            decided_at=now,
+        ))
+
+    return HarnessReport(gate_on=gate_on, outcomes=tuple(outcomes), audit_records=tuple(audit_records))
