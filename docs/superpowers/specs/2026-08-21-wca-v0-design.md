@@ -3,49 +3,49 @@
 **Date:** 21 August 2026
 **Status:** For review, pre-implementation
 **Source:** `docs/PRD-whatsapp-commerce-agent.md`
-**Prior art:** `../business-state` — a completed prototype whose clock, id, hold and extraction modules are harvested here (§11)
+**Prior art:** `../business-state`. Its clock, id, hold and extraction modules are reused here. See §11.
 
 ---
 
 ## 1. Goal
 
-Prove that a booking agent can operate a calendar on WhatsApp without the deploying business accepting unlimited risk from what the agent commits to.
+A booking agent makes promises the salon then has to keep. This build limits what it is allowed to promise.
 
-The agent proposes; it never commits. A deterministic gate checks each proposal against written policy and live calendar state and blocks anything it cannot verify. Blocked cases go to a human, with time left for that human to reply.
+The agent never books. It proposes a booking and says which policy rules it relied on. A separate component called the gate checks that proposal. If any check fails, the booking does not happen and a human is told.
 
-v0 must demonstrate seven properties:
+v0 has to show seven things work:
 
-1. Rules are data, versioned, and evaluated without running code.
-2. A rule that needs a fact the conversation lacks **cannot fire** — the agent knows when it does not know.
-3. The gate makes no model call, is deterministic, and can only block.
-4. The gate catches a booking that looks individually correct but ignores a more specific rule.
-5. Bookings are two-phase: a hold is released on failure, a commit is idempotent.
-6. An escalation raised too late to be answered is caught **before** the booking commits.
-7. The same gate code scores the offline test set and would gate live traffic.
+1. **Rules live in a file, not in code.** Each rule has a version number. Nothing is executed to evaluate one.
+2. **A missing fact is not a "no".** The patch-test rule needs to know if this is a first colour visit. If nobody asked, the answer is unknown. The rule must not read that as "no".
+3. **The gate calls no model.** It runs the same way every time, and it can only block.
+4. **The gate catches a missed override.** Two rules can apply to one booking. The agent cites the general one and books. The gate blocks it, because the more specific rule applied too.
+5. **A booking happens in two steps.** First a hold on the slot, then a commit. A failed booking releases the hold. Committing twice books once.
+6. **A late escalation is caught before the booking, not after.** If there is no time left for a human to reply, the gate blocks.
+7. **The test set runs the real gate.** The same function scores the offline cases and would run on live traffic.
 
-**It does not demonstrate that these numbers hold at volume.** Twenty cases cannot support a rate. §14 states this plainly.
+What v0 does not show: that any of this holds at volume. Twenty test cases cannot support a percentage. §15 says so plainly.
 
 ## 2. Scope
 
-**In:** one service category (colour), five rules, twenty test cases, a mock calendar with TTL holds and a reaper, the gate with all six checks, fact extraction via the Anthropic API, a fake transport with a simulated clock, an audit record, a harness that runs the cases with the gate off and on, **and one live WhatsApp thread against the Cloud API**.
+**In v0:** one service (colour), five rules, twenty test cases, a mock calendar, all six gate checks, fact extraction through the Anthropic API, a fake transport with a fake clock, an audit record, a test harness, and one live WhatsApp thread.
 
-**Out, deliberately:**
+**Not in v0:**
 
 | Out | Why |
 |---|---|
-| Taking the deposit | PRD §11. The rule fires; no money moves. |
-| Multiple businesses, rescheduling, cancellation, second language, Flows | PRD §11 |
-| Live calendar integration | v1 — the calendar stays mock even on the live thread |
+| Taking the deposit | The rule fires. No money moves. PRD §11. |
+| Multiple businesses, rescheduling, cancellation, a second language, Flows | PRD §11 |
+| A real calendar | v1. The calendar stays mock even on the live thread. |
 
-**On the live thread.** Every automated test runs against the fake transport; the live thread is a demonstration, never a test. Nothing in CI depends on Meta being reachable, and the exit criteria separate what the fake transport proves (§14.1–8) from what the live thread shows (§14.9–11). This split is deliberate: a green suite must never require a network, a token, or a tunnel.
+**About the live thread.** Every automated test runs against the fake transport. The live thread is a demo, not a test. The test suite must pass with no network, no token and no tunnel. §14 splits the exit criteria to keep that true: items 1 to 8 run offline, items 9 to 11 need Meta.
 
 ## 3. Stack
 
-Python 3.12, `uv`, Pydantic v2 for every boundary model, pytest. Anthropic API for fact extraction only. Standard library on the default path, per PRD §10.
+Python 3.12, `uv`, Pydantic v2 at every boundary, pytest. The Anthropic API is used for fact extraction and nothing else. The PRD asks for standard library on the default path, and the default path holds to that: rules, gate, calendar and audit import no framework.
 
-**FastAPI + uvicorn for the webhook receiver only.** The PRD asks for standard library on the default path, and the default path — rules, gate, calendar, audit — has no framework in it. The receiver is infrastructure at the edge: two endpoints, and it must acknowledge within Meta's retry timeout while work continues in the background (§4.1). `http.server` would make that concurrency hand-rolled, which is a worse trade than one dependency at the boundary.
+The webhook receiver uses FastAPI and uvicorn. It has two endpoints and it has to reply to Meta within a few seconds while real work continues in the background. Writing that concurrency by hand on top of `http.server` is more risk than one dependency at the edge.
 
-The fake transport remains a plain Python object with no server at all, which is what makes the simulated clock possible.
+The fake transport is a plain Python object with no server at all. That is what makes the fake clock possible.
 
 ## 4. Architecture
 
@@ -53,27 +53,26 @@ The fake transport remains a plain Python object with no server at all, which is
 Meta Cloud API
       │  POST, at-least-once, order not guaranteed
       ▼
-webhook receiver ── verify X-Hub-Signature-256 ──▶ 200 OK immediately
-      │                    (reject on mismatch)
+webhook receiver ── check X-Hub-Signature-256 ──▶ 200 OK immediately
+      │                  (reject if it fails)
       ▼
-   dedup(message_id) ─▶ per-thread serial queue
+   dedup(message_id) ─▶ per-thread queue, one at a time
                                         │
                         ┌───────────────┴───────────────┐
                         ▼                               ▼
                  fact extraction                  policy store
-                 (model call; never               (rules as data,
-                  in the booking path)             versioned)
-                        │                               │
+                 (calls a model)                  (rules file,
+                        │                          versioned)
                         └───────────────┬───────────────┘
                                         ▼
-                        proposal {action, cited_rules@version}
+                        proposal {action, rules cited}
                                         │
                                 hold(slot, ttl)
                                         ▼
                         ╔═══════════════════════════════╗
-                        ║  GATE                         ║  no model call
-                        ║  1 rules exist                ║  deterministic
-                        ║  2 facts support them         ║  pure function
+                        ║  GATE                         ║  calls no model
+                        ║  1 rules exist                ║  same result
+                        ║  2 facts support them         ║  every time
                         ║  3 no override missed         ║
                         ║  4 booking cites a rule       ║
                         ║  5 slot still free            ║
@@ -86,34 +85,38 @@ webhook receiver ── verify X-Hub-Signature-256 ──▶ 200 OK immediately
                                         ▼
                                   audit record
 
-reaper ─▶ releases expired holds
+reaper ─▶ releases holds that expired
 ```
 
-Three properties, each with a test that fails if it stops being true:
+Three rules about the gate. Each has a test that fails if it stops being true.
 
-**The gate makes no model call.** `gate.py` imports nothing from `extract/`. Enforced by a test that asserts the module's import graph is free of the extraction and network packages.
+**The gate calls no model.** `gate.py` does not import anything from `extract/`. A test reads the import graph and fails if it ever does.
 
-**The gate is a pure function.** `evaluate(proposal, facts, ruleset, calendar_view, window_view, now) -> Verdict`. It takes no clients, mutates nothing, and returns a verdict — never a corrected proposal. Called twice with the same arguments it returns an equal verdict.
+**The gate is a pure function.** `evaluate(proposal, facts, ruleset, calendar_view, window_view, now) -> Verdict`. No clients, no writes, no hidden state. Call it twice with the same arguments and you get the same verdict.
 
-**The gate can only block.** `Verdict` is `PASS` or `BLOCK(check, kind, reason)`. There is no variant carrying an alternative action, so the gate structurally cannot supply an answer and therefore cannot introduce a mistake of its own.
+**The gate can only say no.** A `Verdict` is either `PASS` or `BLOCK(check, kind, reason)`. There is no third option that carries a corrected booking. Because the gate cannot suggest anything, it cannot be wrong in a way that creates a bad booking.
 
 ### 4.1 The webhook edge
 
-Three requirements the fake transport never had, each with a way to fail that only shows up in production.
+Three things the fake transport never needed. Each fails only in production.
 
-**Signature verification is a trust boundary, not a formality.** Meta signs every webhook body with the app secret as `X-Hub-Signature-256`. Without verifying it, anyone who discovers the URL can post a message and inject facts into a pipeline that books appointments. The receiver computes an HMAC-SHA256 over the **raw request body** — not the re-serialised JSON, since re-serialisation changes bytes and breaks the comparison — and compares with `hmac.compare_digest`. An unverified request is rejected before parsing, and never reaches dedup.
+**Check the signature.** Meta signs every webhook with your app secret and puts the result in the `X-Hub-Signature-256` header. If we skip that check, anyone who finds the URL can post a fake customer message and get an appointment booked. So the receiver computes HMAC-SHA256 over the raw request bytes and compares it using `hmac.compare_digest`.
 
-A test asserts that a body with a wrong or absent signature produces no conversation state and no proposal.
+Use the raw bytes, not the parsed-and-reserialised JSON. Reserialising changes whitespace and key order, the hash no longer matches, and every real message gets rejected. A request that fails the check is dropped before anything parses it.
 
-**Acknowledge first, work second.** Meta retries a webhook that is not answered quickly, and a retry storm turns at-least-once into many-times. The receiver validates the signature, enqueues, and returns 200 — it never waits on a model call or the gate. Dedup on `message_id` is what makes the retries harmless, so dedup must happen on the **processing** side of the queue, not only at the edge, or a burst of retries can race past a check that has not yet recorded the first copy.
+A test posts a body with a bad signature and asserts that no conversation state and no proposal were created.
 
-**Webhook verification handshake.** Meta issues `GET` with `hub.mode`, `hub.challenge` and `hub.verify_token`; the receiver echoes the challenge only when the token matches the configured value.
+**Reply first, work second.** Meta retries any webhook it does not get a fast answer to. If we wait for a model call, we get retries, and retries mean duplicate messages. So the receiver checks the signature, puts the message on a queue, and returns 200. It never waits for the gate.
 
-The live thread also needs a publicly reachable HTTPS URL. That is an operational dependency, not a code one — a tunnel in development, any host in v1 — and the spec records it so it is not discovered on demo day.
+Dedup on `message_id` is what makes those retries safe. Do the dedup where the queue is consumed, not at the edge. If it only runs at the edge, several retries can arrive at once and all pass the check before any of them has been recorded.
+
+**The verification handshake.** When you save a callback URL, Meta sends a `GET` with `hub.mode`, `hub.challenge` and `hub.verify_token`. Echo the challenge back, but only if the token matches the one you configured.
+
+The live thread also needs a public HTTPS URL. That is an operations problem, not a code one: a tunnel while developing, a host in v1. It is written down here so nobody discovers it on demo day.
 
 ## 5. Rules as data
 
-A rule is a record. Conditions are nested data walked by a closed operator set — there is no string parsing and no `ast`, so there is no evaluation surface to get wrong.
+A rule is a record in a JSON file. Its condition is nested data. A small function walks that data and returns an answer. Nothing is compiled and nothing is executed, so there is no way for a rule to run code.
 
 ```json
 {
@@ -130,166 +133,174 @@ A rule is a record. Conditions are nested data walked by a closed operator set �
 }
 ```
 
-**Operators, closed set:** `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `is_true`, `is_false`. **Combinators:** `all`, `any`, `not`. Anything else fails at load.
+**Operators.** Only these: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `is_true`, `is_false`. **Combinators:** `all`, `any`, `not`. Anything else fails when the file loads.
 
-**Outcome types, closed set:** `allow`, `deny`, `require_lead_time`, `require_deposit`, `require_escalation`.
+**Outcomes.** Only these: `allow`, `deny`, `require_lead_time`, `require_deposit`, `require_escalation`.
 
-`requires_facts` is derived at load from the condition tree and validated against any hand-supplied list, so it cannot drift from the condition it describes.
+`requires_facts` is worked out from the condition when the file loads. If the file also lists it by hand and the two disagree, loading fails. This stops the list drifting away from the condition it describes.
 
-### Three-valued evaluation — the load-bearing detail
+### Unknown is a third answer
 
-A condition evaluates to `TRUE`, `FALSE` or `INDETERMINATE`. A rule whose condition is `INDETERMINATE` **does not fire, and is not treated as not applying.**
+A condition returns `TRUE`, `FALSE` or `UNKNOWN`. A rule that returns `UNKNOWN` does not fire, and it does not count as satisfied either.
 
-This is how the agent knows when it does not know. Collapsing `INDETERMINATE` into `FALSE` would mean the patch-test rule silently fails to apply whenever the agent simply never established whether it was a first colour visit — producing exactly the unsafe booking this system exists to prevent, with no signal anywhere.
+Here is why that matters. The patch-test rule needs `is_first_colour_visit`. Suppose the agent never asked. If `UNKNOWN` collapsed into `FALSE`, the rule would quietly decide this is not a first visit, and the booking would go through. The customer arrives with no patch test. Nothing in the logs would show anything went wrong.
 
-Propagation: `all` is `FALSE` if any child is `FALSE`, else `INDETERMINATE` if any child is, else `TRUE`. `any` is `TRUE` if any child is `TRUE`, else `INDETERMINATE` if any child is, else `FALSE`. `not` maps `TRUE`↔`FALSE` and leaves `INDETERMINATE` unchanged.
+So `UNKNOWN` stays separate all the way through:
 
-An `INDETERMINATE` rule that would otherwise be relevant is surfaced to the proposer as a missing fact, which is how the agent decides to ask a question instead of booking.
+- `all` returns `FALSE` if any part is `FALSE`. Otherwise `UNKNOWN` if any part is `UNKNOWN`. Otherwise `TRUE`.
+- `any` returns `TRUE` if any part is `TRUE`. Otherwise `UNKNOWN` if any part is `UNKNOWN`. Otherwise `FALSE`.
+- `not` swaps `TRUE` and `FALSE`, and leaves `UNKNOWN` alone.
 
-### Versioning
+When a rule comes back `UNKNOWN`, the proposer is told which fact is missing. That is how the agent decides to ask a question instead of booking.
 
-`RuleSet` is immutable and content-addressed: `ruleset_version` is a hash of its rules. A proposal cites `rule_id@rule_version`; the audit record stores both plus the `ruleset_version` live at the time. Editing a rule produces a new version rather than rewriting history (PRD §11).
+### Versions
 
-### Readability
+A `RuleSet` cannot be changed once loaded. Its `ruleset_version` is a hash of the rules inside it. A proposal cites `rule_id@rule_version`. The audit record stores those plus the `ruleset_version` that was live at the time. Editing a rule creates a new version, so old audit records still point at what was actually applied.
 
-`rules/render.py` turns any condition into English — `service category is colour AND first colour visit is true` — used in the audit record and the rule listing, so policy remains readable to the person who owns it without a DSL existing anywhere in the trust path.
+### Reading a rule
 
-## 6. Specificity and override
+`rules/render.py` turns any condition into a sentence: `service category is colour AND first colour visit is true`. That sentence goes in the audit record and the rule listing. The salon owner can read their own policy without anyone building a rule language.
 
-Check 3 catches a booking that is individually defensible but ignores a more specific rule.
+## 6. Which rule wins
 
-**Specificity is derived, not declared.** Rule B is more specific than rule A when `B.requires_facts` is a strict superset of `A.requires_facts` and both evaluate `TRUE` against the same facts. `{service_category}` versus `{service_category, is_first_colour_visit}` is exactly the patch-test case, caught structurally rather than by anyone remembering to rank a rule.
+Check 3 exists for one situation. Two rules apply to the same booking. The agent cites the general one, books, and never notices the specific one.
 
-`priority` breaks genuine ties — two matching rules where neither's fact set contains the other's. When such a pair has equal priority, the ruleset **fails to load**, because a policy that cannot decide between two applicable rules is a policy bug and should surface at author time, not at booking time.
+**The code works out which rule is more specific.** Nobody ranks them by hand. Rule B is more specific than rule A when B needs every fact A needs, plus at least one more, and both come back `TRUE` on the same facts.
+
+That is exactly the patch-test case. The general rule needs `{service_category}`. The patch-test rule needs `{service_category, is_first_colour_visit}`. The second set contains the first, so the patch-test rule wins, and nobody had to remember to say so.
+
+`priority` only settles a genuine tie, where two rules match and neither needs everything the other needs. If such a pair has the same priority, **the rules file fails to load.** A policy that cannot say which of two rules applies is a policy bug. Better to find it when writing the rules than when a customer is booking.
 
 ## 7. The six checks
 
-`gate.evaluate` runs them in order and returns on the first failure. Each block is labelled `grounding` (an invented or misapplied rule) or `conclusion` (the right rules, the wrong call), so the two failure types are counted separately.
+`gate.evaluate` runs the checks in order and stops at the first failure. Every block is tagged `grounding` or `conclusion`, so the two kinds of mistake are counted separately. Grounding means the agent used a rule that does not exist or does not apply. Conclusion means the rules were right and the call was still wrong.
 
-| # | Check | Fails when | Kind |
+| # | Check | Blocks when | Kind |
 |---|---|---|---|
-| 1 | Rules exist | A cited `rule_id@version` does not resolve in the ruleset | grounding |
-| 2 | Facts support them | Re-evaluating a cited rule against the facts is not `TRUE` | grounding |
-| 3 | No override missed | An uncited rule evaluates `TRUE` and is strictly more specific than a cited one — **or** a relevant rule is `INDETERMINATE` | grounding |
-| 4 | Booking cites a rule | A commit action cites no rule whose outcome permits it | grounding |
-| 5 | Slot still free | The hold is missing, expired, or belongs to another thread | conclusion |
-| 6 | Escalation deliverable | Remaining window < margin, or no approved template exists for this escalation reason | conclusion |
+| 1 | Rules exist | A cited `rule_id@version` is not in the ruleset | grounding |
+| 2 | Facts support them | A cited rule does not come back `TRUE` on the facts | grounding |
+| 3 | No override missed | A rule the agent did not cite comes back `TRUE` and is more specific. Also blocks if a relevant rule comes back `UNKNOWN`. | grounding |
+| 4 | Booking cites a rule | A booking cites no rule whose outcome allows it | grounding |
+| 5 | Slot still free | The hold is gone, expired, or belongs to another thread | conclusion |
+| 6 | Escalation deliverable | Less than the margin left in the window, or no approved template for this reason | conclusion |
 
-Check 3 covering the `INDETERMINATE` case is deliberate: an unestablished fact that would have triggered an override is indistinguishable, from the customer's side, from an override that was ignored.
+Check 3 blocks on `UNKNOWN` on purpose. A fact nobody established, and a rule the agent ignored, produce the same outcome for the customer: an appointment that should not have been made.
 
-Check 5 re-reads calendar state at gate time rather than trusting the hold token, so a hold released by the reaper between proposal and gate is caught.
+Check 5 reads the calendar again rather than trusting the hold it was handed. If the reaper released that hold in the meantime, this is where we find out.
 
 ## 8. Calendar and holds
 
-`CalendarPort` is a protocol: `availability(window)`, `hold(slot, thread_id, ttl, now)`, `commit(hold_id, idempotency_key, now)`, `release(hold_id, reason, now)`, `expire_due(now)`.
+`CalendarPort` is a protocol with five methods: `availability(window)`, `hold(slot, thread_id, ttl, now)`, `commit(hold_id, idempotency_key, now)`, `release(hold_id, reason, now)` and `expire_due(now)`.
 
-`calendar/mock.py` implements it in memory. Semantics harvested from `business-state/reservations.py`:
+`calendar/mock.py` implements it in memory. The behaviour comes from `business-state/reservations.py`:
 
-- One slot, one hold, enforced as a **hard constraint in the calendar service** — not an optimistic check a later write might lose.
-- TTL-bounded, released by a reaper. A hold is a lease, not a lock: a crash between hold and commit orphans the slot, and only expiry recovers it (PRD §11).
-- `commit` takes an idempotency key. Committing the same key twice is a no-op returning the original booking, so a redelivered webhook cannot book twice.
-- Refusals carry **distinct reasons** — already held, outside opening hours, no such slot — because a caller that cannot tell "gone" from "never existed" cannot respond correctly.
+- One slot takes one hold. The calendar enforces that itself. It is not a check the caller can forget to make.
+- A hold expires. A reaper releases expired holds. If the process dies between hold and commit, the slot is stuck until expiry. That is why the TTL exists.
+- `commit` takes an idempotency key. Commit twice with the same key and you get the same booking back, not a second one. A retried webhook cannot book twice.
+- A refusal says which kind it is: already held, outside opening hours, or no such slot. A caller that cannot tell "taken" from "does not exist" cannot reply sensibly to the customer.
 
-## 9. Conversation, dedup and ordering
+## 9. Messages arriving
 
-**Dedup on `message_id`,** backed by an idempotency store, because webhooks are delivered at least once.
+**Dedup on `message_id`.** Meta delivers a webhook at least once, which means sometimes more than once.
 
-**One serial queue per thread,** because webhook order is not guaranteed and two messages in one thread could otherwise both pass the gate for the same slot. Serialisation is per `thread_id`; different threads proceed concurrently.
+**One queue per thread, processed one message at a time.** Meta does not guarantee order. Without a queue, two messages in the same conversation could both reach the gate for the same slot and both pass. Threads do not block each other.
 
-`ConversationState` holds the thread's accumulated facts, its open hold if any, and `last_inbound_at` — the timestamp the 24-hour window is measured from.
+`ConversationState` holds the facts gathered so far, the open hold if there is one, and `last_inbound_at`. That timestamp is where the 24-hour window is measured from.
 
 ## 10. Fact extraction
 
-The model does language; the code does trust. Harvested wholesale from `business-state/extract/`.
+The model reads language. The code decides what to trust. Taken from `business-state/extract/`.
 
-The extractor returns a `RawFactSet` constrained by a JSON schema via `client.messages.parse` — every field explicit and nullable, because a strict schema cannot express a free-form dict. It never sees a rule, never cites one, and never proposes an action. `propose.py` matches facts against the ruleset separately.
+The extractor returns a `RawFactSet` shaped by a JSON schema, through `client.messages.parse`. Every field is listed explicitly and can be null, because a strict schema cannot describe a free-form dictionary. The extractor never sees a rule, never cites one, and never proposes a booking. `propose.py` matches facts to rules separately.
 
-**No sampling parameters are ever sent** (`temperature`, `top_p`, `top_k` were removed on Claude Opus 5 and return a 400). Model ids are exact strings with no date suffix: `claude-haiku-4-5`, `claude-opus-5`.
+Never send `temperature`, `top_p` or `top_k`. They were removed on Claude Opus 5 and return a 400. Model ids are exact and carry no date suffix: `claude-haiku-4-5`, `claude-opus-5`.
 
-`FakeExtractor` replays scripted facts, so the entire suite runs offline with no API key.
+`FakeExtractor` replays a script, so the whole test suite runs with no API key.
 
-**A hostile-extractor test is required**, harvested in spirit from the prior project's trust-boundary trace: script the extractor to return confident facts that a successfully-injected model would emit from adversarial customer text, and assert the gate still blocks. This is stronger than asserting the schema refuses something, and it runs without a key.
+**One test simulates a compromised extractor.** Script it to return confident facts that an injected model would produce from hostile customer text, then check the gate still blocks. This is a stronger test than checking the schema rejects bad input, and it needs no key.
 
-## 11. What is harvested from `business-state`
+## 11. Reused from `business-state`
 
-Deliberate port with review, not copy-paste. Each is adapted, and its tests come with it.
+Ported deliberately and reviewed, not copied. Tests come across with the code.
 
-| From | To | Change |
+| From | To | What changes |
 |---|---|---|
-| `clock.py` | `clock.py` | Add `SimulatedClock`. Keep the rule that **library code never calls `datetime.now()`** — every function taking `now` explicitly is the precondition for testing 24-hour expiry at all. |
-| `ids.py` | `ids.py` | Near-verbatim. `idempotency_key(source, kind, payload)`. |
-| `reservations.py` | `calendar/mock.py` | Rename `Reservation`→`Hold`, stock line→slot. Keep TTL, reaper, hard constraint, distinct refusal reasons. |
-| `log.py` | `audit.py` | Append-only, idempotent on key. Records now carry rule versions. |
-| `extract/{base,fake,anthropic}.py` | same paths | `RawCandidate`/`Candidate` becomes `RawFact`/`Fact`. Keep the two-shape bridge and structured output. |
-| `schema.py` **patterns** | `models.py`, `rules/schema.py` | Frozen models, `extra="forbid"`, discriminated unions, fields **derived rather than supplied**. Not the event types. |
+| `clock.py` | `clock.py` | Add `SimulatedClock`. Keep the rule that library code never calls `datetime.now()`. Every function takes `now`. Without that, the 24-hour tests are impossible. |
+| `ids.py` | `ids.py` | Almost unchanged. `idempotency_key(source, kind, payload)`. |
+| `reservations.py` | `calendar/mock.py` | `Reservation` becomes `Hold`. Stock line becomes slot. Keep the TTL, the reaper and the typed refusals. |
+| `log.py` | `audit.py` | Append-only, ignores duplicate keys. Records now carry rule versions. |
+| `extract/{base,fake,anthropic}.py` | same paths | `RawCandidate`/`Candidate` becomes `RawFact`/`Fact`. Keep the two-shape split and the structured output. |
+| patterns from `schema.py` | `models.py`, `rules/schema.py` | Frozen models, `extra="forbid"`, tagged unions, fields computed rather than passed in. Not the event types. |
 
-**Not harvested:** `catalogue.py`, `projection.py`, `state.py`, `health.py`, `answers.py`, `score.py`, and the six-module synthetic corpus generator (`truth`, `render`, `distractors`, `noise`, `adversarial`, `generate`). The prior project generated its corpus labels-first; this one hand-labels twenty cases, which is deliberately the inverse and correct at this size.
+**Not reused:** `catalogue.py`, `projection.py`, `state.py`, `health.py`, `answers.py`, `score.py`, and the six modules that generated the synthetic message corpus. That project wrote the truth first and generated messages from it. This one hand-writes twenty cases, which is the right choice at this size.
 
 ## 12. The test set
 
-Twenty cases in five tiers, per PRD §9: **clean, adversarial, override, unanswerable, ambiguous.** Each case is a thread script plus scripted facts plus an expected verdict, with a one-line rationale.
+Twenty cases in five groups, from PRD §9: clean, adversarial, override, unanswerable, ambiguous. A case is a thread script, a set of facts, an expected verdict, and one line saying why.
 
-They are **drafted then reviewed**, not observed. The spec records this so nobody mistakes them for field data.
+The cases are written and then reviewed. They are not taken from real salons. That is recorded here so nobody treats them as field data.
 
-`harness.py` runs every case twice — gate off, gate on — and emits the KPI table with counts beside every rate:
+`harness.py` runs every case twice, gate off and gate on, and prints the KPI table with counts next to every percentage:
 
-| KPI | Target (PRD §7) |
+| KPI | Target, PRD §7 |
 |---|---|
 | Bad bookings | 0 |
-| Booking rate | ≥ 80% |
-| Escalation precision | ≥ 85% |
+| Booking rate | 80% or better |
+| Escalation precision | 85% or better |
 | Escalation deliverability | 100% |
-| Gate effect | published with counts |
-| Cost of control | reported, not targeted |
+| Gate effect | printed with counts |
+| Cost of control | printed, not targeted |
 
-## 13. Escalation and the window
+## 13. Escalation and the 24-hour window
 
-`window_closes_at = last_inbound_at + 24h`. Check 6 requires `window_closes_at - now >= ESCALATION_MARGIN` (default 2 hours, defined once) **and** that an approved template exists for the escalation reason.
+The window closes at `last_inbound_at + 24h`. Check 6 needs two things to be true: at least `ESCALATION_MARGIN` left before it closes (2 hours by default, set in one place), and an approved template for this escalation reason.
 
-`escalation.py` holds a template registry keyed by reason, each with an approval status. **Quality rating is modelled as a field, stubbed green in v0.** It is present so that turning it on later is not a retrofit, and the audit record shows it was not consulted.
+`escalation.py` keeps a registry of templates by reason, each with its approval status. Quality rating is a field in that registry, hard-coded green in v0. It is there so that turning it on later is a config change rather than a rewrite, and the audit record shows it was not used.
 
-The PRD is explicit that the platform exposes none of this reliably and the check has to guess. This spec's guess models two of the three named inputs and says so; it does not model per-user frequency caps, because their behaviour is opaque and inventing it would produce a check that looks rigorous while asserting fiction.
+The PRD is clear that Meta does not expose any of this reliably and this check has to guess. This guess covers two of the three inputs the PRD names. It leaves out per-user frequency caps, because nobody outside Meta knows how they behave, and inventing them would produce a check that looks careful while asserting things we made up.
 
-**On the live thread the window becomes real**, and a template that is not actually approved in Meta's console will fail to send whatever check 6 concluded. The template registry must therefore be seeded from the real approval state before the live demonstration, and the audit record stores the registry's answer so a mismatch between what check 6 believed and what Meta did is visible afterwards rather than invisible. Hour-23 expiry is still only testable under the simulated clock — the live thread cannot demonstrate it without waiting a day.
+**On the live thread the window is real.** A template that is not actually approved in Meta's console will fail to send, whatever check 6 decided. So seed the registry from the real approval state before demoing. The audit record stores what check 6 believed, so if Meta disagrees you can see it afterwards.
 
 ## 14. Exit criteria
 
-Each is a command whose output is recorded, not a claim.
+Each one is a command whose output gets recorded. None of them is a claim.
 
-1. `wca cases` runs all twenty with the gate **on**: zero bad bookings.
-2. `wca cases --gate-off` runs the same twenty: at least one bad booking, proving the gate is load-bearing. **A gate whose removal changes nothing is not a control.**
-3. The patch-test override case blocks at check 3, and blocks for the `INDETERMINATE` variant where the first-visit fact was never established.
-4. An escalation raised at hour 23 of the window fails check 6 under the simulated clock; the same escalation at hour 2 passes.
-5. A redelivered `message_id` produces no second booking; a repeated `commit` with the same idempotency key returns the original.
-6. A hold left by a crash is released by the reaper and the slot becomes available again.
-7. The gate is provably model-free: the import-graph test passes, and calling `evaluate` twice with identical arguments returns equal verdicts.
-8. Every case's audit record cites `rule_id@version` and the `ruleset_version` live at the time.
+Offline. These must all pass, and none of them touches the network:
 
-**On the live thread** — demonstrated, not automated, and not required for a green suite:
+1. `wca cases` runs all twenty with the gate on. Zero bad bookings.
+2. `wca cases --gate-off` runs the same twenty. At least one bad booking. If removing the gate changes nothing, it is not doing anything.
+3. The patch-test case blocks at check 3. It also blocks in the variant where nobody established whether it was a first colour visit.
+4. An escalation raised at hour 23 fails check 6 under the fake clock. The same escalation at hour 2 passes.
+5. The same `message_id` delivered twice books once. The same idempotency key committed twice returns the first booking.
+6. A hold orphaned by a crash gets released by the reaper and the slot frees up.
+7. The gate is model-free: the import test passes, and calling `evaluate` twice with the same arguments gives the same verdict.
+8. Every audit record names `rule_id@version` and the `ruleset_version` in force at the time.
 
-9. One real WhatsApp thread takes a customer from enquiry to a committed booking with no human involved, and the audit record for it cites the rules the gate checked.
-10. A message whose `X-Hub-Signature-256` does not verify is rejected at the edge and produces no conversation state. Demonstrated by posting a forged body directly to the endpoint.
-11. The patch-test case blocks on the live thread and escalates to a human, with the escalation raised while the window is still open.
+On the live thread. Demonstrated by hand. Not needed for a green test run:
 
-## 15. What this cannot claim
+9. One real WhatsApp conversation goes from question to booked appointment with no human involved, and the audit record names the rules the gate checked.
+10. A webhook with a bad `X-Hub-Signature-256` is rejected, and no conversation state is created. Shown by posting a forged body at the endpoint.
+11. The patch-test case blocks on the live thread and reaches a human while the window is still open.
+
+## 15. What this does not prove
 
 | Claim | Why not |
 |---|---|
-| These rates hold at volume | Twenty cases. One case moves a rate five points. Counts are reported; the targets are directional. |
-| Salons require a 48-hour patch test | PRD assumption A1, modelled on standard practice and **unconfirmed**. Check 3, the override tier and the headline failure story all rest on it. |
-| The test cases reflect real salon policy | Drafted then reviewed, not observed (A3). |
-| Escalations expire in practice | A2 is unmeasured. The simulated clock proves the *mechanism*, not the frequency. |
-| Policy in other industries is rule-shaped | A4 untested, and the one that would most damage the approach if false. |
-| The agent works on WhatsApp at any volume | One live thread demonstrates the path end to end. It does not exercise concurrency, retry storms, template rejection, quality-rating throttling, or a second customer. |
-| Check 6 predicts real deliverability | It models time and template approval. Meta's actual send decision also depends on quality rating and frequency caps, which are opaque. A live send that fails despite a check 6 pass is a finding, and the audit record is written so that it is a visible one. |
+| These percentages hold at volume | Twenty cases. One case moves a percentage by five points. Counts are printed. The targets point in a direction, nothing more. |
+| Salons require a 48-hour patch test | PRD assumption A1. Based on standard practice and not confirmed with any salon. Check 3, the override cases and the main demo all depend on it. |
+| The test cases match real salon policy | Written then reviewed, not observed. PRD assumption A3. |
+| Escalations expire in practice | A2 is unmeasured. The fake clock proves the mechanism works. It says nothing about how often it happens. |
+| Policy in other industries is rule-shaped | A4 is untested, and it is the assumption that would hurt most if it turns out false. |
+| This works on WhatsApp at scale | One live conversation shows the path works once. It does not test two customers at the same time, retry storms, a rejected template, or quality-rating throttling. |
+| Check 6 predicts what Meta will do | It checks time and template approval. Meta also weighs quality rating and frequency caps, which are not visible to us. A send that fails after check 6 passed is a finding, and the audit record is written so you can see it happened. |
 
-## 16. Module layout
+## 16. Files
 
 ```
 whatsapp-commerce-agent/
   policy/salon.rules.json          five rules, versioned
   cases/v0.cases.json              twenty cases
-  prompts/extract-v0.1.md          versioned, never inline
+  prompts/extract-v0.1.md          versioned, never written inline
   src/wca/
     clock.py            ids.py            models.py
     rules/              schema.py  evaluate.py  specificity.py  render.py  store.py
@@ -302,6 +313,6 @@ whatsapp-commerce-agent/
   tests/
 ```
 
-`gate.py` depends only on `models`, `rules`, and read-only views of calendar and window state. It imports nothing from `extract`, `transport` or `conversation`, which is what makes the purity test enforceable rather than aspirational.
+`gate.py` imports only `models`, `rules`, and read-only views of the calendar and the window. It imports nothing from `extract`, `transport` or `conversation`. That is what makes the import test possible.
 
-`transport/whatsapp.py` implements `TransportPort` against the Cloud API — send text, send interactive buttons, parse an inbound payload. `transport/webhook.py` is the FastAPI app: signature verification, the `GET` handshake, fast acknowledge, enqueue. **Only these two modules know WhatsApp exists** (PRD §8), which is what lets everything above them run against the fake transport.
+`transport/whatsapp.py` talks to the Cloud API: send text, send buttons, parse an inbound payload. `transport/webhook.py` is the FastAPI app: signature check, the GET handshake, fast reply, queue. Those two files are the only ones that know WhatsApp exists, which is what lets everything else run against the fake transport.
