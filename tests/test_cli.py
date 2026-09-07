@@ -34,3 +34,10 @@ def test_rules_lists_every_rule_in_english():
     assert result.returncode == 0
     assert "patch_test_first_colour@1" in result.stdout
     assert "first colour visit is true" in result.stdout
+
+
+def test_help_lists_all_four_subcommands():
+    result = _run("--help")
+    assert result.returncode == 0
+    for name in ("cases", "rules", "send", "serve"):
+        assert name in result.stdout
