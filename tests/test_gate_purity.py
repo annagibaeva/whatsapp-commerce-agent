@@ -42,8 +42,18 @@ def test_the_gate_module_pulls_in_no_network_package_transitively():
     # against the current process's sys.modules pass or fail depending on
     # test order rather than on what gate.py itself imports. A subprocess
     # that imports only wca.gate has no such pollution.
+    import os
     import subprocess
     import sys
+
+    # pytest's own pythonpath = ["src"] setting (pyproject.toml) is not
+    # inherited by a subprocess. Without passing PYTHONPATH explicitly,
+    # this only works when wca happens to be installed in the venv, which
+    # made this test fail in two worktrees where it was not installed and
+    # looked like a purity violation when it was really an environment gap.
+    src_dir = str(pathlib.Path("src").resolve())
+    env = dict(os.environ)
+    env["PYTHONPATH"] = src_dir
 
     code = (
         "import sys\n"
@@ -54,7 +64,12 @@ def test_the_gate_module_pulls_in_no_network_package_transitively():
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
-        check=True,
+        env=env,
+    )
+    assert result.returncode == 0, (
+        "the subprocess could not import wca.gate even with PYTHONPATH set "
+        f"to {src_dir}. This looks like an environment problem (wca not "
+        "importable), not a gate purity violation. stderr:\n" + result.stderr
     )
     loaded_modules = set(result.stdout.splitlines())
     banned = {m for m in loaded_modules if m.startswith(("anthropic", "httpx", "fastapi"))}

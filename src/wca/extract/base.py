@@ -32,6 +32,7 @@ class RawFactSet(BaseModel):
         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
     ] | None = None
     requested_date_text: str | None = None
+    hours_until_appointment: int | None = Field(default=None, ge=0)
 
 
 class ExtractionResult(BaseModel):

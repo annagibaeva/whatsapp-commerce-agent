@@ -76,7 +76,14 @@ def evaluate(
                 f"{rule.ref()} might apply but we never established {gaps}",
             )
 
-    # 4. A booking cites at least one rule that permits it.
+    # 4. The cited rules must actually permit this booking. That takes two
+    # things: at least one cited rule allows a booking, and no cited rule
+    # imposes a requirement that is unmet.
+    #
+    # require_deposit is deliberately not enforced here. The PRD says v0
+    # evaluates the deposit rule and stops short of collecting a deposit.
+    # That gap is a scope decision, not something to "fix" later without
+    # checking the PRD again.
     if proposal.action.type == "book":
         permitting = [r for r in cited if r.outcome.type in ALLOWS_BOOKING]
         if not permitting:
@@ -85,6 +92,26 @@ def evaluate(
                 BlockKind.GROUNDING,
                 "no cited rule allows a booking",
             )
+
+        for rule in cited:
+            if rule.outcome.type != "require_lead_time" or rule.outcome.hours is None:
+                continue
+            needed = rule.outcome.hours
+            if "hours_until_appointment" not in facts:
+                return Verdict.blocked(
+                    GateCheck.BOOKING_CITES_RULE,
+                    BlockKind.GROUNDING,
+                    f"{rule.ref()} requires {needed} hours lead time and we never "
+                    "established hours_until_appointment",
+                )
+            available = facts["hours_until_appointment"]
+            if available < needed:
+                return Verdict.blocked(
+                    GateCheck.BOOKING_CITES_RULE,
+                    BlockKind.GROUNDING,
+                    f"{rule.ref()} requires {needed} hours lead time, only "
+                    f"{available} available",
+                )
 
         # 5. The slot is still ours.
         if not calendar_view.get("slot_exists"):
