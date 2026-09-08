@@ -1,0 +1,135 @@
+{
+  "name": "WhatsApp 24h appointment reminders",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "3f1a0c10-0001-4a00-9000-000000000001",
+      "name": "Every hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR-TUNNEL.trycloudflare.com/reminders/due",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "within_hours",
+              "value": "26"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3f1a0c10-0001-4a00-9000-000000000002",
+      "name": "Get due reminders",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "XAzjfnLzLxx9dzRu",
+          "name": "X-N8N-Secret Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v23.0/YOUR_PHONE_NUMBER_ID/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: \"whatsapp\", to: $json.customer_phone, type: \"template\", template: { name: \"appointment_reminder_24h\", language: { code: \"en_GB\" }, components: [ { type: \"body\", parameters: [ { type: \"text\", text: $json.service_name }, { type: \"text\", text: $json.starts_at_label } ] } ] } }) }}",
+        "options": {}
+      },
+      "id": "3f1a0c10-0001-4a00-9000-000000000003",
+      "name": "Send template",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "iPl4Bq8LxBBJsWDH",
+          "name": "Authorization Bearer Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR-TUNNEL.trycloudflare.com/reminders/sent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ booking_id: $('Get due reminders').item.json.booking_id }) }}",
+        "options": {}
+      },
+      "id": "3f1a0c10-0001-4a00-9000-000000000004",
+      "name": "Mark sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "XAzjfnLzLxx9dzRu",
+          "name": "X-N8N-Secret Header Auth"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every hour": {
+      "main": [
+        [
+          {
+            "node": "Get due reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get due reminders": {
+      "main": [
+        [
+          {
+            "node": "Send template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send template": {
+      "main": [
+        [
+          {
+            "node": "Mark sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
