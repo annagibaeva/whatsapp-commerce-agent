@@ -19,27 +19,64 @@ GRAPH_VERSION = "v23.0"
 MAX_BUTTONS = 3
 
 
+def _visible_text(message: dict[str, Any]) -> str | None:
+    """What the customer typed, tapped, or picked -- or None to skip.
+
+    Three shapes carry visible text today:
+
+    - a plain text message: the typed body.
+    - a quick-reply button tap on a template (type "button"): the
+      button's own label, e.g. Confirm/Reschedule on the 24-hour
+      appointment reminder.
+    - a reply to an interactive message (type "interactive"), which
+      Meta splits into two sub-shapes: `button_reply` (tapping a
+      button we sent) and `list_reply` (picking a row from a list we
+      sent). Both carry a `title` -- the label the customer saw and
+      chose.
+
+    Any other type, or one of these three with its inner object missing
+    or empty, returns None so the caller skips it instead of raising.
+    """
+    msg_type = message.get("type")
+    if msg_type == "text":
+        return message.get("text", {}).get("body")
+    if msg_type == "button":
+        return message.get("button", {}).get("text")
+    if msg_type == "interactive":
+        interactive = message.get("interactive", {})
+        sub_type = interactive.get("type")
+        if sub_type == "button_reply":
+            return interactive.get("button_reply", {}).get("title")
+        if sub_type == "list_reply":
+            return interactive.get("list_reply", {}).get("title")
+        return None
+    return None
+
+
 def parse_inbound(payload: dict[str, Any]) -> list[InboundMessage]:
-    """Pull text messages out of a webhook body.
+    """Pull customer-visible messages out of a webhook body.
 
     Meta sends delivery statuses through the same webhook. Those carry no
-    message and must be ignored, not treated as empty text. Non-text
-    messages are ignored too: v0 reads text only.
+    message and must be ignored, not treated as empty text. A tap on a
+    template's quick-reply button, or a reply to an interactive button
+    or list message, is turned into the same shape as a typed message:
+    its `text` is what the customer visibly chose, so the agent and the
+    extractor never have to learn a new shape to answer a button tap.
+    Anything else -- an image, a location, a reaction -- is still
+    ignored: v0 only reads what the customer could have typed instead.
     """
     out: list[InboundMessage] = []
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
             for message in value.get("messages", []):
-                if message.get("type") != "text":
-                    continue
-                body = message.get("text", {}).get("body")
-                if body is None:
+                text = _visible_text(message)
+                if text is None:
                     continue
                 out.append(InboundMessage(
                     message_id=message["id"],
                     thread_id=message["from"],
-                    text=body,
+                    text=text,
                     sent_at=datetime.fromtimestamp(
                         int(message["timestamp"]), tz=timezone.utc
                     ),
