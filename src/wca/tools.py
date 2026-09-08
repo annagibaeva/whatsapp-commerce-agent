@@ -65,6 +65,19 @@ class ToolContext:
         return self._counter
 
 
+#: `datetime.weekday()` is Monday=0..Sunday=6. Indexing into this tuple
+#: turns that into the same lowercase names the ruleset's `eq` comparisons
+#: and `RawFactSet.requested_weekday` use.
+WEEKDAY_NAMES: tuple[str, ...] = (
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+)
+
+
+def _weekday_of(starts_at: datetime) -> str:
+    """The weekday name a rule can compare against, from a real slot time."""
+    return WEEKDAY_NAMES[starts_at.weekday()]
+
+
 def search_catalogue(ctx: ToolContext, query: str) -> list[dict[str, Any]]:
     """Read-only. Touches nothing but the catalogue."""
     return [
@@ -116,14 +129,46 @@ def check_availability(
     return results
 
 
+#: The principle: a fact that describes **the booking** must be derived
+#: from the booking, in code, right here -- never trusted from the model
+#: or an earlier conversation turn. A fact that describes **the
+#: customer** can only ever come from the conversation; no code in this
+#: repository could derive `is_first_colour_visit` or `customer_age` from
+#: anything else. Every fact any rule in the live ruleset actually reads
+#: (`Rule.requires_facts`, across `RuleSet.rules`) must appear in exactly
+#: one of these two sets -- see
+#: `test_every_fact_the_ruleset_reads_is_classified` in test_tools.py.
+#: That test is what turns "a new rule reads a new booking-describing
+#: fact" from a silent hole (the model supplies it, same bug as
+#: `requested_weekday` before this fix) into a failing test someone has
+#: to look at.
+#:
+#: Adding a name to DERIVED_FACTS is a promise, not a wish -- it must
+#: actually be computed somewhere below (or in `wca.catalogue.facts_for`)
+#: before that promise is kept.
+DERIVED_FACTS: frozenset[str] = frozenset({
+    "service_category",  # wca.catalogue.facts_for -- from the catalogue
+    "quoted_price_minor",  # wca.catalogue.facts_for -- from the catalogue
+    "requested_weekday",  # below -- from the slot's own starts_at
+    "hours_until_appointment",  # below -- from the slot's own starts_at
+})
+
+#: Facts only the customer's own words can establish.
+CONVERSATIONAL_FACTS: frozenset[str] = frozenset({
+    "is_first_colour_visit",
+    "customer_age",
+})
+
+
 def request_booking(ctx: ToolContext, service_id: str, slot_id: str) -> dict[str, Any]:
     """The gated tool. See the module docstring for the invariant this keeps.
 
     Order: look up the service; build facts (conversation facts, then
-    catalogue facts, then the *computed* hours-until-appointment, in that
-    order, so the computed number always wins over anything the model or
-    an earlier turn put in the conversation's facts); propose; hold;
-    evaluate; commit on PASS or release on BLOCK; audit either way.
+    catalogue facts, then the *computed* hours-until-appointment and
+    requested-weekday, in that order, so the computed values always win
+    over anything the model or an earlier turn put in the conversation's
+    facts); propose; hold; evaluate; commit on PASS or release on BLOCK;
+    audit either way.
     """
     if ctx._booked_this_turn:
         # No proposal was built and nothing was held, so there is nothing
@@ -137,6 +182,8 @@ def request_booking(ctx: ToolContext, service_id: str, slot_id: str) -> dict[str
 
     facts: dict[str, Any] = dict(ctx.conversation.facts)
     facts.update(facts_for(service))
+
+    slot = ctx.calendar.slot(slot_id)
     hours = ctx.calendar.hours_until(slot_id, ctx.now)
     if hours is None:
         # An unknown slot has no start time to compute from. Drop
@@ -146,6 +193,16 @@ def request_booking(ctx: ToolContext, service_id: str, slot_id: str) -> dict[str
         facts.pop("hours_until_appointment", None)
     else:
         facts["hours_until_appointment"] = hours
+
+    # Same move, same reason, for the weekday: `requested_weekday`
+    # describes the slot being booked, not the customer, so it is the
+    # slot's own `starts_at` that decides it -- never whatever the model
+    # (or an earlier turn) put in conversation.facts. Popping first means
+    # a slot with no known start time correctly leaves the fact missing
+    # rather than keeping a stale or invented value around.
+    facts.pop("requested_weekday", None)
+    if slot is not None and slot.starts_at is not None:
+        facts["requested_weekday"] = _weekday_of(slot.starts_at)
 
     proposal = propose(
         thread_id=ctx.conversation.thread_id,

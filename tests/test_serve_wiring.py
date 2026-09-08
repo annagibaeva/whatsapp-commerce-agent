@@ -408,13 +408,22 @@ def test_a_legitimate_colour_booking_succeeds_end_to_end_through_run_job():
     slot_id = "s_e2e_colour"
     # A real wall-clock time, comfortably in the future -- run_job reads
     # datetime.now(timezone.utc) itself, so this cannot be pinned to a
-    # fixed `now` the way tests/test_tools.py can.
+    # fixed `now` the way tests/test_tools.py can. Nudged off Sunday: the
+    # policy's no_colour_on_sunday rule now reads the slot's own weekday
+    # (see wca.tools.request_booking), not a model-supplied fact, so a
+    # slot that happened to land on a Sunday would make this test flaky.
     starts_at = datetime.now(timezone.utc) + timedelta(days=30)
+    while starts_at.weekday() == 6:  # Sunday
+        starts_at += timedelta(days=1)
     calendar = MockCalendar(slots=[Slot(slot_id, starts_at)])
 
+    # requested_weekday is no longer a field the model reports -- it is
+    # derived in wca.tools.request_booking from the slot's own starts_at
+    # (see wca.tools.DERIVED_FACTS). Only customer-describing facts are
+    # supplied here now.
     extractor = FakeExtractor(script={
         "wamid.e2e_booking": RawFactSet(
-            is_first_colour_visit=False, customer_age=30, requested_weekday="tuesday",
+            is_first_colour_visit=False, customer_age=30,
         ),
     })
     client = _ScriptedClient(script=[

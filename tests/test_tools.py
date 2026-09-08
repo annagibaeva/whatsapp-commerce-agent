@@ -22,11 +22,16 @@ from wca.tools import (
 RULES = load_ruleset("policy/salon.rules.json")
 CATALOGUE = load_catalogue("policy/salon.catalogue.json")
 
-NOW = utc(2026, 8, 21, 10)
+NOW = utc(2026, 8, 21, 10)  # a Friday
 FIRST_COLOUR_SLOT = "s_first_colour"
 FIRST_COLOUR_STARTS_AT = NOW + timedelta(hours=10)
 LATER_SLOT = "s_later"
-LATER_STARTS_AT = NOW + timedelta(hours=72)
+LATER_STARTS_AT = NOW + timedelta(hours=72)  # a Monday
+#: A slot that actually falls on a Sunday -- for proving
+#: `no_colour_on_sunday` is checked against the slot's own start time,
+#: not against whatever `requested_weekday` a conversation fact claims.
+SUNDAY_SLOT = "s_sunday"
+SUNDAY_STARTS_AT = NOW + timedelta(hours=48)  # a Sunday
 
 REGISTRY = TemplateRegistry(templates=(
     Template(reason="general", name="general_notice", approved=True),
@@ -49,6 +54,7 @@ def _calendar() -> MockCalendar:
     return MockCalendar(slots=[
         Slot(FIRST_COLOUR_SLOT, FIRST_COLOUR_STARTS_AT),
         Slot(LATER_SLOT, LATER_STARTS_AT),
+        Slot(SUNDAY_SLOT, SUNDAY_STARTS_AT),
     ])
 
 
@@ -197,15 +203,55 @@ def test_calling_request_booking_twice_still_produces_one_booking():
 # --- a block carries the gate's reason text ---------------------------------
 
 def test_a_denied_booking_returns_the_gates_reason_text():
+    """The slot actually falls on a Sunday. The conversation never says
+    so -- ADULT_RETURNING_FACTS claims "tuesday" -- but `requested_weekday`
+    is derived from SUNDAY_STARTS_AT, not read off the conversation, so
+    the Sunday rule fires anyway."""
     calendar = _calendar()
-    facts = dict(ADULT_RETURNING_FACTS, requested_weekday="sunday")
-    ctx = _ctx(calendar, facts=facts)
+    ctx = _ctx(calendar, facts=ADULT_RETURNING_FACTS)
 
-    result = request_booking(ctx, service_id="svc_colour_full", slot_id=LATER_SLOT)
+    result = request_booking(ctx, service_id="svc_colour_full", slot_id=SUNDAY_SLOT)
 
     assert result["ok"] is False
     assert "Sunday" in result["reason"] or "sunday" in result["reason"].lower()
     assert calendar.bookings() == ()
+
+
+# --- requested_weekday cannot be injected, in either direction -------------
+
+def test_requested_weekday_cannot_be_injected_by_the_model_to_book_a_sunday():
+    """The bypass this task fixes: the model claims a weekday that is not
+    the slot's real one, hoping the deny rule never sees "sunday". The
+    slot's own starts_at must win, so this books nothing."""
+    calendar = _calendar()
+    lying_facts = dict(ADULT_RETURNING_FACTS, requested_weekday="tuesday")
+    ctx = _ctx(calendar, facts=lying_facts)
+
+    result = request_booking(ctx, service_id="svc_colour_full", slot_id=SUNDAY_SLOT)
+
+    assert result["ok"] is False
+    assert "sunday" in result["reason"].lower()
+    assert calendar.bookings() == ()
+
+    record = ctx.audit.records()[0]
+    assert record.proposal.facts["requested_weekday"] == "sunday"
+
+
+def test_requested_weekday_cannot_be_injected_by_the_model_to_block_a_tuesday():
+    """The reverse direction: the model claims "sunday" for a slot that is
+    really a Tuesday. A fix that only ever blocks is over-broad -- the
+    derived weekday must win here too, and this books successfully."""
+    calendar = _calendar()
+    lying_facts = dict(ADULT_RETURNING_FACTS, requested_weekday="sunday")
+    ctx = _ctx(calendar, facts=lying_facts)
+
+    result = request_booking(ctx, service_id="svc_colour_full", slot_id=LATER_SLOT)
+
+    assert result["ok"] is True
+    assert len(calendar.bookings()) == 1
+
+    record = ctx.audit.records()[0]
+    assert record.proposal.facts["requested_weekday"] == "monday"
 
 
 def test_an_unknown_service_is_refused_without_touching_the_calendar():
@@ -398,3 +444,37 @@ def test_escalate_tool_spec_carries_a_fixed_enum_of_reasons():
     escalate_spec = next(spec for spec in TOOL_SPECS if spec["name"] == "escalate")
     assert escalate_spec["input_schema"]["properties"]["reason"]["enum"] == list(ESCALATION_REASONS)
     assert "general" in ESCALATION_REASONS
+
+
+# --- every fact the ruleset reads must be classified ------------------------
+
+def test_every_fact_the_ruleset_reads_is_classified():
+    """The point of this task: a new rule that reads a new booking fact
+    must fail this test until someone classifies it, instead of silently
+    falling through to being trusted from the model -- the exact shape of
+    the `requested_weekday` bypass this task fixes.
+
+    Walks every fact any live rule's condition actually mentions
+    (`Rule.requires_facts`, derived at load time from the condition
+    itself, so this cannot be faked by a rule with a stale
+    `requires_facts` list) and demands each one is claimed by exactly one
+    of `DERIVED_FACTS` or `CONVERSATIONAL_FACTS` in `wca.tools`.
+    """
+    from wca.tools import CONVERSATIONAL_FACTS, DERIVED_FACTS
+
+    used: set[str] = set()
+    for rule in RULES.rules:
+        used |= set(rule.requires_facts)
+
+    classified = DERIVED_FACTS | CONVERSATIONAL_FACTS
+    unclassified = used - classified
+    assert not unclassified, (
+        f"the ruleset reads {sorted(unclassified)}, which is not in "
+        "DERIVED_FACTS or CONVERSATIONAL_FACTS (wca.tools) -- classify it "
+        "as describing the booking (derive it in code) or the customer "
+        "(conversational) before this rule can be trusted"
+    )
+    assert not (DERIVED_FACTS & CONVERSATIONAL_FACTS), (
+        "a fact cannot be both derived-from-the-booking and "
+        "conversational -- pick one"
+    )

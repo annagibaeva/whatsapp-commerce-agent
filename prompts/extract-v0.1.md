@@ -14,8 +14,9 @@ field out is the normal and correct answer.
   they have had colour here before.
 - `customer_age`: a number, only if the message states an age.
 - `quoted_price_minor`: a price in minor units, only if a price is stated.
-- `requested_weekday`: monday to sunday, only if a day is named.
-- `requested_date_text`: the date or time as the customer wrote it.
+- `requested_date_text`: the date or time as the customer wrote it, exactly
+  as they wrote it. Do not work out a weekday or a calendar date yourself --
+  something else does that from the actual slot being booked.
 
 ## Rules
 

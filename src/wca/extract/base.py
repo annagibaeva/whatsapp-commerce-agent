@@ -28,9 +28,14 @@ class RawFactSet(BaseModel):
     is_first_colour_visit: bool | None = None
     customer_age: int | None = Field(default=None, ge=0, le=120)
     quoted_price_minor: int | None = Field(default=None, ge=0)
-    requested_weekday: Literal[
-        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
-    ] | None = None
+    # `requested_weekday` used to be reported here, from the model's
+    # reading of the message. It described the booking, not the
+    # customer, and `service_category`/`quoted_price_minor` had already
+    # moved off this path for the same reason (see wca.catalogue). It is
+    # now derived in `wca.tools.request_booking` from the slot's own
+    # `starts_at`, the same way `hours_until_appointment` is -- see
+    # `wca.tools.DERIVED_FACTS`. `requested_date_text` stays: it is what
+    # the customer said, kept verbatim, not a fact a rule reads.
     requested_date_text: str | None = None
 
 
