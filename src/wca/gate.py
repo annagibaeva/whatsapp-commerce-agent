@@ -16,11 +16,28 @@ from typing import Any
 
 from wca.models import BlockKind, GateCheck, Proposal, Verdict
 from wca.rules.evaluate import Tri, evaluate_rule, missing_facts
-from wca.rules.schema import RuleSet
+from wca.rules.schema import Rule, RuleSet
 from wca.rules.specificity import is_more_specific, matching_rules, unknown_rules
 
 #: Outcomes that let a booking go ahead.
 ALLOWS_BOOKING = {"allow", "require_deposit"}
+
+
+def _true_of_type(ruleset: RuleSet, facts: dict[str, Any], outcome_type: str) -> tuple[Rule, ...]:
+    """Every rule of one outcome type that evaluates TRUE on these facts.
+
+    Cited or not. A veto rule does not care what the agent quoted.
+    """
+    return tuple(r for r in matching_rules(ruleset, facts) if r.outcome.type == outcome_type)
+
+
+def _unknown_of_type(ruleset: RuleSet, facts: dict[str, Any], outcome_type: str) -> tuple[Rule, ...]:
+    """Every rule of one outcome type whose truth we cannot yet establish.
+
+    Cited or not, same as above. An unasked question must not let a veto
+    be dodged for free.
+    """
+    return tuple(r for r in unknown_rules(ruleset, facts) if r.outcome.type == outcome_type)
 
 
 def evaluate(
@@ -89,19 +106,31 @@ def evaluate(
     #   c. no rule anywhere in the ruleset that evaluates TRUE on these
     #      facts has outcome require_escalation. A booking that should
     #      have gone to a human is not a booking either, cited or not.
-    #   d. no CITED rule's require_lead_time is unmet.
+    #   d. no rule anywhere in the ruleset that evaluates TRUE on these
+    #      facts has an unmet require_lead_time. Same reasoning as (b):
+    #      citing deposit_over_threshold must not let a first-time colour
+    #      client dodge the 48-hour patch test that patch_test_first_colour
+    #      would otherwise require. It does not matter that the agent
+    #      cited a different, also-true rule instead.
     #
-    # (b) and (c) also veto on UNKNOWN, not only TRUE. A deny or
-    # require_escalation rule whose facts were never established is not
-    # a "no" the way a missing fact never is anywhere else in this
-    # module (see check 3, and rules/evaluate.py's own docstring on why
-    # UNKNOWN must not collapse to FALSE) — but it is also not a proven
-    # "yes", and the veto only needs proof that deny does NOT apply, which
-    # an unestablished fact cannot supply. Skipping unknowns here would
-    # let an agent dodge the veto for free by simply never asking the
-    # question a deny rule depends on (never asking the weekday, never
-    # asking the customer's age), which is worse than citing a narrow
+    # (b), (c) and (d) all veto on UNKNOWN as well as TRUE. A deny,
+    # require_escalation or require_lead_time rule whose facts were never
+    # established is not a "no" the way a missing fact never is anywhere
+    # else in this module (see check 3, and rules/evaluate.py's own
+    # docstring on why UNKNOWN must not collapse to FALSE) — but it is
+    # also not a proven "yes", and the veto only needs proof that the rule
+    # does NOT apply, which an unestablished fact cannot supply. Skipping
+    # unknowns here would let an agent dodge the veto for free by simply
+    # never asking the question a rule depends on (never asking the
+    # weekday, never asking the customer's age, never asking whether this
+    # is a first colour visit), which is worse than citing a narrow
     # subset: it is not naming a fact at all.
+    #
+    # (b), (c) and (d) share the same shape: find every TRUE rule of the
+    # outcome type, then every UNKNOWN one, cited or not. _true_of_type
+    # and _unknown_of_type above are that one idea, factored out so the
+    # three read as one veto pattern rather than three loops that happen
+    # to look similar.
     #
     # (b) and (c) is why the load-time ranking guard that used to live in
     # rules/specificity.py (and ran from rules/store.py) was removed: it
@@ -123,43 +152,39 @@ def evaluate(
                 "no cited rule allows a booking",
             )
 
-        for rule in matching_rules(ruleset, facts):
-            if rule.outcome.type == "deny":
-                return Verdict.blocked(
-                    GateCheck.BOOKING_CITES_RULE,
-                    BlockKind.GROUNDING,
-                    f"{rule.ref()} denies this booking: {rule.outcome.reason}",
-                )
+        for rule in _true_of_type(ruleset, facts, "deny"):
+            return Verdict.blocked(
+                GateCheck.BOOKING_CITES_RULE,
+                BlockKind.GROUNDING,
+                f"{rule.ref()} denies this booking: {rule.outcome.reason}",
+            )
 
-        for rule in unknown_rules(ruleset, facts):
-            if rule.outcome.type == "deny":
-                gaps = ", ".join(missing_facts(rule, facts))
-                return Verdict.blocked(
-                    GateCheck.BOOKING_CITES_RULE,
-                    BlockKind.GROUNDING,
-                    f"{rule.ref()} might deny this booking and we never established {gaps}",
-                )
+        for rule in _unknown_of_type(ruleset, facts, "deny"):
+            gaps = ", ".join(missing_facts(rule, facts))
+            return Verdict.blocked(
+                GateCheck.BOOKING_CITES_RULE,
+                BlockKind.GROUNDING,
+                f"{rule.ref()} might deny this booking and we never established {gaps}",
+            )
 
-        for rule in matching_rules(ruleset, facts):
-            if rule.outcome.type == "require_escalation":
-                return Verdict.blocked(
-                    GateCheck.BOOKING_CITES_RULE,
-                    BlockKind.GROUNDING,
-                    f"{rule.ref()} requires escalation to a human: {rule.outcome.reason}",
-                )
+        for rule in _true_of_type(ruleset, facts, "require_escalation"):
+            return Verdict.blocked(
+                GateCheck.BOOKING_CITES_RULE,
+                BlockKind.GROUNDING,
+                f"{rule.ref()} requires escalation to a human: {rule.outcome.reason}",
+            )
 
-        for rule in unknown_rules(ruleset, facts):
-            if rule.outcome.type == "require_escalation":
-                gaps = ", ".join(missing_facts(rule, facts))
-                return Verdict.blocked(
-                    GateCheck.BOOKING_CITES_RULE,
-                    BlockKind.GROUNDING,
-                    f"{rule.ref()} might require escalation to a human and we never "
-                    f"established {gaps}",
-                )
+        for rule in _unknown_of_type(ruleset, facts, "require_escalation"):
+            gaps = ", ".join(missing_facts(rule, facts))
+            return Verdict.blocked(
+                GateCheck.BOOKING_CITES_RULE,
+                BlockKind.GROUNDING,
+                f"{rule.ref()} might require escalation to a human and we never "
+                f"established {gaps}",
+            )
 
-        for rule in cited:
-            if rule.outcome.type != "require_lead_time" or rule.outcome.hours is None:
+        for rule in _true_of_type(ruleset, facts, "require_lead_time"):
+            if rule.outcome.hours is None:
                 continue
             needed = rule.outcome.hours
             if "hours_until_appointment" not in facts:
@@ -191,6 +216,17 @@ def evaluate(
                     f"{rule.ref()} requires {needed} hours lead time, only "
                     f"{available} available",
                 )
+
+        for rule in _unknown_of_type(ruleset, facts, "require_lead_time"):
+            if rule.outcome.hours is None:
+                continue
+            gaps = ", ".join(missing_facts(rule, facts))
+            return Verdict.blocked(
+                GateCheck.BOOKING_CITES_RULE,
+                BlockKind.GROUNDING,
+                f"{rule.ref()} might require a longer lead time and we never "
+                f"established {gaps}",
+            )
 
         # 5. The slot is still ours.
         if not calendar_view.get("slot_exists"):

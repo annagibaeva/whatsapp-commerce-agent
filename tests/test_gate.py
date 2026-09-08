@@ -220,6 +220,34 @@ def test_brute_force_no_citation_subset_books_over_a_matching_escalation():
             )
 
 
+def test_brute_force_no_citation_subset_books_over_a_matching_lead_time():
+    """Lead-time twin of the deny and escalation brute-force tests.
+
+    This is the live bug: a first-time colour visit 10 hours out, where
+    the price is also over the deposit threshold. Citing
+    deposit_over_threshold (true, and a permitting outcome) used to slip
+    past the 48-hour patch-test requirement because the old lead-time
+    check only looked at CITED rules, unlike the deny and escalation
+    vetoes which already scanned every matching rule. Over these facts,
+    not one citation subset may produce an allowed 'book' verdict.
+    """
+    import itertools
+
+    facts = {
+        "service_category": "colour", "is_first_colour_visit": True,
+        "hours_until_appointment": 10, "quoted_price_minor": 15000,
+        "customer_age": 30, "requested_weekday": "monday",
+    }
+    for n in range(len(RULES.rules) + 1):
+        for combo in itertools.combinations(RULES.rules, n):
+            p = _proposal_from_rules(combo, facts)
+            v = evaluate(p, RULES, FREE, DELIVERABLE)
+            assert not v.allowed, (
+                f"citing {[r.ref() for r in combo]} booked over a matching "
+                "require_lead_time"
+            )
+
+
 def test_check_5_blocks_when_the_hold_is_gone():
     p = _proposal(
         ["colour_allowed"],
