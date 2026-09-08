@@ -52,7 +52,7 @@ def test_a_correctly_signed_message_is_accepted_and_delivered():
     assert [m.message_id for m in seen] == ["wamid.ABC"]
 
 
-def test_a_wrongly_signed_message_is_rejected_and_never_delivered():
+def test_a_wrongly_signed_message_is_rejected_and_never_delivered(capsys):
     seen = []
     body = json.dumps(PAYLOAD).encode()
     r = _client(seen).post(
@@ -61,14 +61,37 @@ def test_a_wrongly_signed_message_is_rejected_and_never_delivered():
     )
     assert r.status_code == 403
     assert seen == []
+    logged = capsys.readouterr().out
+    assert "webhook 403: hash mismatch" in logged
+    assert f"secret_len={len(SECRET)}" in logged
+    assert SECRET not in logged
+    assert "wrong-secret" not in logged
 
 
-def test_a_message_with_no_signature_at_all_is_rejected():
+def test_a_message_with_no_signature_at_all_is_rejected(capsys):
     seen = []
     body = json.dumps(PAYLOAD).encode()
     r = _client(seen).post("/webhook", content=body)
     assert r.status_code == 403
     assert seen == []
+    logged = capsys.readouterr().out
+    assert "webhook 403: header missing" in logged
+    assert f"secret_len={len(SECRET)}" in logged
+    assert SECRET not in logged
+
+
+def test_a_sha1_signature_header_is_rejected_as_not_sha256(capsys):
+    seen = []
+    body = json.dumps(PAYLOAD).encode()
+    r = _client(seen).post(
+        "/webhook", content=body,
+        headers={"X-Hub-Signature-256": "sha1=deadbeef"},
+    )
+    assert r.status_code == 403
+    assert seen == []
+    logged = capsys.readouterr().out
+    assert "webhook 403: header not sha256=" in logged
+    assert SECRET not in logged
 
 
 def test_the_signature_is_computed_over_the_raw_body_not_the_reparsed_json():

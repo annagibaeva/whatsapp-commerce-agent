@@ -75,10 +75,25 @@ def create_app(
     @app.post("/webhook")
     async def receive(request: Request) -> Response:
         raw = await request.body()
-        if not verify_signature(
-            settings.app_secret, raw, request.headers.get("X-Hub-Signature-256")
-        ):
-            # Rejected before anything parses it.
+        header = request.headers.get("X-Hub-Signature-256")
+        if not verify_signature(settings.app_secret, raw, header):
+            # Rejected before anything parses it. The reason is for
+            # operators: Meta retries a 403, and "header missing" vs
+            # "hash mismatch" is the difference between Cloudflare
+            # stripping the header and WHATSAPP_APP_SECRET not matching
+            # the app that signed the body. Never log the secret, the
+            # signature, or the body — only lengths and the reason.
+            if not header:
+                reason = "header missing"
+            elif not header.startswith("sha256="):
+                reason = "header not sha256="
+            else:
+                reason = "hash mismatch"
+            secret_len = len(settings.app_secret.get_secret_value())
+            print(
+                f"webhook 403: {reason} "
+                f"(secret_len={secret_len}, body_len={len(raw)})"
+            )
             return Response(status_code=403)
 
         try:

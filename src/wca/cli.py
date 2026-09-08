@@ -21,6 +21,26 @@ REGISTRY = TemplateRegistry(templates=(
 ))
 
 
+def _project_root() -> Path:
+    # src/wca/cli.py -> parents[0]=wca, [1]=src, [2]=repo root
+    return Path(__file__).resolve().parents[2]
+
+
+def _load_dotenv() -> Path:
+    """Load the repo-root .env so cwd and stale process env cannot win.
+
+    python-dotenv's default load_dotenv() searches from the process cwd and
+    does not override variables already present in os.environ. Either failure
+    mode leaves WHATSAPP_APP_SECRET wrong while the file on disk looks fine,
+    and every Meta-signed POST then returns 403.
+    """
+    from dotenv import load_dotenv
+
+    path = _project_root() / ".env"
+    load_dotenv(path, override=True)
+    return path
+
+
 def cmd_cases(args: argparse.Namespace) -> int:
     cases = load_cases(args.cases)
     rules = load_ruleset(args.rules)
@@ -45,11 +65,9 @@ def cmd_rules(args: argparse.Namespace) -> int:
 
 
 def cmd_send(args: argparse.Namespace) -> int:
-    from dotenv import load_dotenv
-
     from wca.transport.whatsapp import WhatsAppTransport
 
-    load_dotenv()
+    _load_dotenv()
     phone_number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
     token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
     if not phone_number_id or not token:
@@ -62,18 +80,20 @@ def cmd_send(args: argparse.Namespace) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
-    from dotenv import load_dotenv
 
     from wca.conversation.dedup import DedupStore
     from wca.conversation.queue import ThreadQueue
     from wca.transport.webhook import WebhookSettings, create_app
 
-    load_dotenv()
+    env_path = _load_dotenv()
     secret = os.environ.get("WHATSAPP_APP_SECRET")
     token = os.environ.get("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
     if not secret or not token:
         print("WHATSAPP_APP_SECRET and WHATSAPP_WEBHOOK_VERIFY_TOKEN must be set in .env")
         return 1
+
+    # Length only — never the secret itself. Confirms which .env won.
+    print(f"[serve] loaded {env_path} (app_secret_len={len(secret)})")
 
     dedup = DedupStore()
     queue = ThreadQueue()

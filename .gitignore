@@ -2,6 +2,9 @@
 .env
 .env.local
 
+# local live-thread logs (can contain webhook query strings)
+serve-live*.log
+
 # python
 __pycache__/
 *.py[cod]
