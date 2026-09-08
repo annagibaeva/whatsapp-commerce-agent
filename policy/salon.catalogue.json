@@ -1,0 +1,10 @@
+{
+  "services": [
+    {"id": "svc_colour_full", "name": "full head colour", "category": "colour",
+     "duration_minutes": 120, "price_minor": 18000},
+    {"id": "svc_colour_roots", "name": "root touch-up", "category": "colour",
+     "duration_minutes": 60, "price_minor": 9000},
+    {"id": "svc_cut", "name": "cut and finish", "category": "cut",
+     "duration_minutes": 45, "price_minor": 4500}
+  ]
+}

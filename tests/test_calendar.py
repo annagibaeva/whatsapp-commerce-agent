@@ -1,14 +1,17 @@
 import pytest
 
-from wca.calendar.mock import HOLD_TTL_SECONDS, HoldRefused, MockCalendar, RefusalReason
+from wca.calendar.mock import HOLD_TTL_SECONDS, HoldRefused, MockCalendar, RefusalReason, Slot
 from wca.clock import utc
 
 NOW = utc(2026, 8, 21, 10)
 SLOT = "s_2026_08_25_1400"
+SLOT_STARTS_AT = utc(2026, 8, 25, 14)
+OTHER_SLOT = "s_2026_08_25_1500"
+OTHER_SLOT_STARTS_AT = utc(2026, 8, 25, 15)
 
 
 def _cal():
-    return MockCalendar(slot_ids=[SLOT, "s_2026_08_25_1500"])
+    return MockCalendar(slots=[Slot(SLOT, SLOT_STARTS_AT), Slot(OTHER_SLOT, OTHER_SLOT_STARTS_AT)])
 
 
 def test_a_hold_takes_the_slot_and_expires_later():
@@ -75,6 +78,39 @@ def test_view_reports_what_the_gate_needs():
     assert view["held_by_thread"] == "t1"
     assert view["hold_id"] == hold.hold_id
     assert view["booked"] is False
+
+
+def test_view_reports_the_slots_start_time_and_hours_until():
+    cal = _cal()
+    view = cal.view(SLOT, now=NOW)
+    assert view["starts_at"] == SLOT_STARTS_AT
+    assert view["hours_until"] == pytest.approx(100.0)
+
+
+def test_hours_until_is_positive_for_a_future_slot():
+    cal = _cal()
+    assert cal.hours_until(SLOT, now=NOW) == pytest.approx(100.0)
+
+
+def test_hours_until_is_negative_for_a_past_slot_not_clamped_to_zero():
+    from datetime import timedelta
+
+    cal = _cal()
+    after = SLOT_STARTS_AT + timedelta(hours=2)
+    assert cal.hours_until(SLOT, now=after) == pytest.approx(-2.0)
+
+
+def test_hours_until_is_none_for_an_unknown_slot():
+    cal = _cal()
+    assert cal.hours_until("s_does_not_exist", now=NOW) is None
+
+
+def test_slot_finds_and_misses():
+    cal = _cal()
+    found = cal.slot(SLOT)
+    assert found is not None
+    assert found.starts_at == SLOT_STARTS_AT
+    assert cal.slot("s_does_not_exist") is None
 
 
 def test_committing_an_expired_hold_is_refused():
