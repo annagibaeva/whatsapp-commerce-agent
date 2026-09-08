@@ -39,13 +39,13 @@ REGISTRY = TemplateRegistry(templates=(
 
 ADULT_RETURNING_FACTS = {
     "is_first_colour_visit": False,
-    "customer_age": 30,
+    "customer_is_over_16": True,
     "requested_weekday": "tuesday",
 }
 
 ADULT_FIRST_VISIT_FACTS = {
     "is_first_colour_visit": True,
-    "customer_age": 30,
+    "customer_is_over_16": True,
     "requested_weekday": "tuesday",
 }
 

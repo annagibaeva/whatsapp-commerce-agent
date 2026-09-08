@@ -63,8 +63,8 @@ def test_every_operator_works(op, value, fact_value, expected):
 
 
 def test_a_type_mismatch_is_unknown_not_a_crash():
-    cond = Comparison(fact="customer_age", op="lt", value=16)
-    assert evaluate(cond, {"customer_age": "sixteen"}) is Tri.UNKNOWN
+    cond = Comparison(fact="hours_until_appointment", op="lt", value=16)
+    assert evaluate(cond, {"hours_until_appointment": "sixteen"}) is Tri.UNKNOWN
 
 
 def test_an_explicit_none_fact_is_unknown():

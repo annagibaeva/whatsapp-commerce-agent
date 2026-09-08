@@ -83,7 +83,7 @@ def test_the_gate_returns_the_same_verdict_every_time():
         action=Action(type="book", slot_id="s1"),
         cited_rules=(CitedRule(rule_id="colour_allowed", version=1),),
         facts={"service_category": "colour", "is_first_colour_visit": False,
-               "quoted_price_minor": 9000, "customer_age": 30, "requested_weekday": "tuesday"},
+               "quoted_price_minor": 9000, "customer_is_over_16": True, "requested_weekday": "tuesday"},
         created_at=utc(2026, 8, 21, 10), hold_id="hold_0001",
     )
     cal = {"slot_exists": True, "booked": False, "held_by_thread": "t1", "hold_id": "hold_0001"}

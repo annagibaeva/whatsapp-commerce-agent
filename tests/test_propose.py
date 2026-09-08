@@ -6,7 +6,7 @@ RULES = load_ruleset("policy/salon.rules.json")
 NOW = utc(2026, 8, 21, 10)
 FULL = {
     "service_category": "colour", "is_first_colour_visit": False,
-    "quoted_price_minor": 9000, "customer_age": 30, "requested_weekday": "tuesday",
+    "quoted_price_minor": 9000, "customer_is_over_16": True, "requested_weekday": "tuesday",
 }
 
 
@@ -25,7 +25,7 @@ def test_a_missing_relevant_fact_produces_a_question_not_a_booking():
 
 
 def test_a_rule_requiring_escalation_produces_an_escalation():
-    facts = dict(FULL, customer_age=14)
+    facts = dict(FULL, customer_is_over_16=False)
     p = propose("t1", facts, RULES, slot_id="s1", now=NOW, counter=1)
     assert p.action.type == "escalate"
     assert p.action.escalation_reason == "under_16_needs_guardian"

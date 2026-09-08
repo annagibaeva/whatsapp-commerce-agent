@@ -41,7 +41,7 @@ def test_a_clean_booking_passes():
     p = _proposal(
         ["colour_allowed"],
         {"service_category": "colour", "is_first_colour_visit": False,
-         "quoted_price_minor": 9000, "customer_age": 30, "requested_weekday": "tuesday"},
+         "quoted_price_minor": 9000, "customer_is_over_16": True, "requested_weekday": "tuesday"},
     )
     assert evaluate(p, RULES, FREE, DELIVERABLE).allowed is True
 
@@ -66,7 +66,7 @@ def test_check_3_blocks_the_patch_test_case():
     p = _proposal(
         ["colour_allowed"],
         {"service_category": "colour", "is_first_colour_visit": True,
-         "quoted_price_minor": 9000, "customer_age": 30, "requested_weekday": "tuesday"},
+         "quoted_price_minor": 9000, "customer_is_over_16": True, "requested_weekday": "tuesday"},
     )
     v = evaluate(p, RULES, FREE, DELIVERABLE)
     assert v.check is GateCheck.OVERRIDE_MISSED
@@ -79,7 +79,7 @@ def test_check_3_also_blocks_when_the_fact_was_never_established():
     p = _proposal(
         ["colour_allowed"],
         {"service_category": "colour", "quoted_price_minor": 9000,
-         "customer_age": 30, "requested_weekday": "tuesday"},
+         "customer_is_over_16": True, "requested_weekday": "tuesday"},
     )
     v = evaluate(p, RULES, FREE, DELIVERABLE)
     assert v.check is GateCheck.OVERRIDE_MISSED
@@ -110,7 +110,7 @@ def test_check_4_vetoes_a_booking_that_cites_a_permit_and_the_deny_that_applies(
     p = _proposal(
         ["colour_allowed", "no_colour_on_sunday"],
         {"service_category": "colour", "requested_weekday": "sunday",
-         "is_first_colour_visit": False, "quoted_price_minor": 9000, "customer_age": 30},
+         "is_first_colour_visit": False, "quoted_price_minor": 9000, "customer_is_over_16": True},
         versions={"no_colour_on_sunday": 3},
     )
     v = evaluate(p, RULES, FREE, DELIVERABLE)
@@ -132,7 +132,7 @@ def test_brute_force_no_citation_subset_books_over_a_matching_deny():
     facts = {
         "service_category": "colour", "requested_weekday": "sunday",
         "is_first_colour_visit": False, "quoted_price_minor": 9000,
-        "customer_age": 30, "hours_until_appointment": 200,
+        "customer_is_over_16": True, "hours_until_appointment": 200,
     }
     for n in range(len(RULES.rules) + 1):
         for combo in itertools.combinations(RULES.rules, n):
@@ -162,7 +162,7 @@ def test_check_4_vetoes_a_booking_when_a_deny_rules_facts_were_never_established
 
 
 def test_check_4_lets_the_same_booking_through_once_the_facts_are_supplied():
-    # Same proposal as above, but with requested_weekday and customer_age
+    # Same proposal as above, but with requested_weekday and customer_is_over_16
     # now established and clean (tuesday, 30). Nothing denies it any
     # more, so this proves the fix above is not over-broad: an
     # UNKNOWN-but-inapplicable deny rule does not itself block bookings
@@ -171,7 +171,7 @@ def test_check_4_lets_the_same_booking_through_once_the_facts_are_supplied():
         ["deposit_over_threshold"],
         {"service_category": "colour", "quoted_price_minor": 20000,
          "hours_until_appointment": 200, "requested_weekday": "tuesday",
-         "customer_age": 30, "is_first_colour_visit": False},
+         "customer_is_over_16": True, "is_first_colour_visit": False},
     )
     v = evaluate(p, RULES, FREE, DELIVERABLE)
     assert v.allowed is True
@@ -179,7 +179,7 @@ def test_check_4_lets_the_same_booking_through_once_the_facts_are_supplied():
 
 def test_brute_force_no_citation_subset_books_with_sparse_facts_that_leave_deny_unknown():
     """Same brute force as the deny regression, but over sparse facts
-    that never establish requested_weekday or customer_age at all. Every
+    that never establish requested_weekday or customer_is_over_16 at all. Every
     citation subset must still fail to book: an unestablished fact is not
     a way past the veto."""
     import itertools
@@ -206,7 +206,7 @@ def test_brute_force_no_citation_subset_books_over_a_matching_escalation():
     import itertools
 
     facts = {
-        "service_category": "colour", "customer_age": 12,
+        "service_category": "colour", "customer_is_over_16": False,
         "is_first_colour_visit": False, "quoted_price_minor": 9000,
         "requested_weekday": "tuesday", "hours_until_appointment": 200,
     }
@@ -236,7 +236,7 @@ def test_brute_force_no_citation_subset_books_over_a_matching_lead_time():
     facts = {
         "service_category": "colour", "is_first_colour_visit": True,
         "hours_until_appointment": 10, "quoted_price_minor": 15000,
-        "customer_age": 30, "requested_weekday": "monday",
+        "customer_is_over_16": True, "requested_weekday": "monday",
     }
     for n in range(len(RULES.rules) + 1):
         for combo in itertools.combinations(RULES.rules, n):
@@ -252,7 +252,7 @@ def test_check_5_blocks_when_the_hold_is_gone():
     p = _proposal(
         ["colour_allowed"],
         {"service_category": "colour", "is_first_colour_visit": False,
-         "quoted_price_minor": 9000, "customer_age": 30, "requested_weekday": "tuesday"},
+         "quoted_price_minor": 9000, "customer_is_over_16": True, "requested_weekday": "tuesday"},
     )
     gone = {"slot_exists": True, "booked": False, "held_by_thread": None, "hold_id": None}
     v = evaluate(p, RULES, gone, DELIVERABLE)
@@ -264,7 +264,7 @@ def test_check_5_blocks_when_another_thread_holds_the_slot():
     p = _proposal(
         ["colour_allowed"],
         {"service_category": "colour", "is_first_colour_visit": False,
-         "quoted_price_minor": 9000, "customer_age": 30, "requested_weekday": "tuesday"},
+         "quoted_price_minor": 9000, "customer_is_over_16": True, "requested_weekday": "tuesday"},
     )
     other = {"slot_exists": True, "booked": False, "held_by_thread": "t9", "hold_id": "hold_0002"}
     v = evaluate(p, RULES, other, DELIVERABLE)
@@ -274,9 +274,10 @@ def test_check_5_blocks_when_another_thread_holds_the_slot():
 def test_check_6_blocks_an_escalation_with_no_time_left():
     p = _proposal(
         ["under_16_needs_guardian"],
-        {"service_category": "colour", "customer_age": 14, "is_first_colour_visit": False,
+        {"service_category": "colour", "customer_is_over_16": False, "is_first_colour_visit": False,
          "quoted_price_minor": 9000, "requested_weekday": "tuesday"},
         action=Action(type="escalate", escalation_reason="under_16"),
+        versions={"under_16_needs_guardian": 2},
     )
     late = {"deliverable": False, "hours_left": 1.0, "why_not": "1.0h left, margin is 2h"}
     v = evaluate(p, RULES, FREE, late)
@@ -288,7 +289,7 @@ def test_check_6_does_not_apply_to_a_booking():
     p = _proposal(
         ["colour_allowed"],
         {"service_category": "colour", "is_first_colour_visit": False,
-         "quoted_price_minor": 9000, "customer_age": 30, "requested_weekday": "tuesday"},
+         "quoted_price_minor": 9000, "customer_is_over_16": True, "requested_weekday": "tuesday"},
     )
     late = {"deliverable": False, "hours_left": 1.0, "why_not": "no time"}
     assert evaluate(p, RULES, FREE, late).allowed is True
@@ -314,7 +315,7 @@ def test_a_non_numeric_hours_until_appointment_blocks_instead_of_raising():
     p = _proposal(
         ["colour_allowed", "patch_test_first_colour"],
         {"service_category": "colour", "is_first_colour_visit": True,
-         "quoted_price_minor": 9000, "customer_age": 30, "requested_weekday": "tuesday",
+         "quoted_price_minor": 9000, "customer_is_over_16": True, "requested_weekday": "tuesday",
          "hours_until_appointment": "lots"},
     )
     v = evaluate(p, RULES, FREE, DELIVERABLE)

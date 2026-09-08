@@ -9,14 +9,14 @@ def test_build_facts_drops_fields_the_model_left_out():
     raw = RawFactSet(service_category="colour", is_first_colour_visit=True)
     facts = build_facts(raw)
     assert facts == {"service_category": "colour", "is_first_colour_visit": True}
-    assert "customer_age" not in facts
+    assert "customer_is_over_16" not in facts
 
 
 def test_a_false_value_survives_but_a_null_does_not():
-    raw = RawFactSet(service_category="colour", is_first_colour_visit=False, customer_age=None)
+    raw = RawFactSet(service_category="colour", is_first_colour_visit=False, customer_is_over_16=None)
     facts = build_facts(raw)
     assert facts["is_first_colour_visit"] is False
-    assert "customer_age" not in facts
+    assert "customer_is_over_16" not in facts
 
 
 def test_the_raw_shape_rejects_unknown_fields():

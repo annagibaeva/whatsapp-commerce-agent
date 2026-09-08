@@ -12,7 +12,9 @@ field out is the normal and correct answer.
 - `service_category`: one of colour, cut, treatment. Only if the message says.
 - `is_first_colour_visit`: true or false. Only if the message says whether
   they have had colour here before.
-- `customer_age`: a number, only if the message states an age.
+- `customer_is_over_16`: true or false, only when the customer states or
+  clearly implies whether they are 16 or older. Never infer this from tone,
+  writing style, or anything other than what they actually said.
 - `quoted_price_minor`: a price in minor units, only if a price is stated.
 - `requested_date_text`: the date or time as the customer wrote it, exactly
   as they wrote it. Do not work out a weekday or a calendar date yourself --

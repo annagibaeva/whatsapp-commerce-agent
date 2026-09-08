@@ -25,12 +25,12 @@ def test_any_joins_with_OR_and_nests_in_brackets():
     cond = Group(all=[
         Comparison(fact="service_category", op="eq", value="colour"),
         Group(any=[
-            Comparison(fact="customer_age", op="lt", value=16),
+            Comparison(fact="hours_until_appointment", op="lt", value=16),
             Comparison(fact="needs_guardian", op="is_true"),
         ]),
     ])
     assert to_english(cond) == (
-        "service category is colour AND (customer age is less than 16 "
+        "service category is colour AND (hours until appointment is less than 16 "
         "OR needs guardian is true)"
     )
 

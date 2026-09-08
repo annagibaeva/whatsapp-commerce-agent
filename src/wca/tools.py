@@ -168,8 +168,9 @@ def check_availability(
 #: from the booking, in code, right here -- never trusted from the model
 #: or an earlier conversation turn. A fact that describes **the
 #: customer** can only ever come from the conversation; no code in this
-#: repository could derive `is_first_colour_visit` or `customer_age` from
-#: anything else. Every fact any rule in the live ruleset actually reads
+#: repository could derive `is_first_colour_visit` or
+#: `customer_is_over_16` from anything else. Every fact any rule in the
+#: live ruleset actually reads
 #: (`Rule.requires_facts`, across `RuleSet.rules`) must appear in exactly
 #: one of these two sets -- see
 #: `test_every_fact_the_ruleset_reads_is_classified` in test_tools.py.
@@ -191,7 +192,7 @@ DERIVED_FACTS: frozenset[str] = frozenset({
 #: Facts only the customer's own words can establish.
 CONVERSATIONAL_FACTS: frozenset[str] = frozenset({
     "is_first_colour_visit",
-    "customer_age",
+    "customer_is_over_16",
 })
 
 

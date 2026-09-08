@@ -26,7 +26,7 @@ class RawFactSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     service_category: Literal["colour", "cut", "treatment"] | None = None
     is_first_colour_visit: bool | None = None
-    customer_age: int | None = Field(default=None, ge=0, le=120)
+    customer_is_over_16: bool | None = None
     quoted_price_minor: int | None = Field(default=None, ge=0)
     # `requested_weekday` used to be reported here, from the model's
     # reading of the message. It described the booking, not the

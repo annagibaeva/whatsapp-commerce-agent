@@ -32,9 +32,9 @@ def test_state_accumulates_facts_across_messages():
 
 def test_a_later_fact_replaces_an_earlier_one():
     state = ConversationState(thread_id="t1", last_inbound_at=utc(2026, 8, 21, 9))
-    state.add_facts({"customer_age": 30}, now=utc(2026, 8, 21, 9))
-    state.add_facts({"customer_age": 31}, now=utc(2026, 8, 21, 10))
-    assert state.facts["customer_age"] == 31
+    state.add_facts({"customer_is_over_16": False}, now=utc(2026, 8, 21, 9))
+    state.add_facts({"customer_is_over_16": True}, now=utc(2026, 8, 21, 10))
+    assert state.facts["customer_is_over_16"] is True
 
 
 def test_last_inbound_moves_with_each_message_and_drives_the_window():

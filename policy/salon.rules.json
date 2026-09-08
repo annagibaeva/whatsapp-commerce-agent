@@ -32,10 +32,10 @@
     },
     {
       "id": "under_16_needs_guardian",
-      "version": 1,
+      "version": 2,
       "condition": {"all": [
         {"fact": "service_category", "op": "eq", "value": "colour"},
-        {"fact": "customer_age", "op": "lt", "value": 16}
+        {"fact": "customer_is_over_16", "op": "is_false"}
       ]},
       "outcome": {"type": "require_escalation", "reason": "under 16 needs a guardian present"},
       "priority": 0,

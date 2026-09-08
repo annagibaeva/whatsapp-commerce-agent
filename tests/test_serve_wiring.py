@@ -423,7 +423,7 @@ def test_a_legitimate_colour_booking_succeeds_end_to_end_through_run_job():
     # supplied here now.
     extractor = FakeExtractor(script={
         "wamid.e2e_booking": RawFactSet(
-            is_first_colour_visit=False, customer_age=30,
+            is_first_colour_visit=False, customer_is_over_16=True,
         ),
     })
     client = _ScriptedClient(script=[

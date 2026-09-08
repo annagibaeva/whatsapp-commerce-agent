@@ -103,7 +103,7 @@ def test_hostile_tool_call_through_the_agent_produces_no_booking():
     """
     calendar = _calendar()
     ctx = _ctx(calendar, facts={
-        "is_first_colour_visit": True, "customer_age": 30, "requested_weekday": "tuesday",
+        "is_first_colour_visit": True, "customer_is_over_16": True, "requested_weekday": "tuesday",
     })
     client = FakeClient(script=[
         _tool_call("request_booking", {"service_id": "svc_colour_full", "slot_id": FIRST_COLOUR_SLOT}),
@@ -122,7 +122,7 @@ def test_hostile_tool_call_through_the_agent_produces_no_booking():
 def test_a_legitimate_multi_tool_conversation_books_once():
     calendar = _calendar()
     ctx = _ctx(calendar, facts={
-        "is_first_colour_visit": False, "customer_age": 30, "requested_weekday": "tuesday",
+        "is_first_colour_visit": False, "customer_is_over_16": True, "requested_weekday": "tuesday",
     })
     client = FakeClient(script=[
         _tool_call("search_catalogue", {"query": "colour"}, call_id="call_1"),
@@ -149,7 +149,7 @@ def test_two_request_booking_calls_in_one_response_produce_only_one_booking():
     """
     calendar = _calendar()
     ctx = _ctx(calendar, facts={
-        "is_first_colour_visit": False, "customer_age": 30, "requested_weekday": "tuesday",
+        "is_first_colour_visit": False, "customer_is_over_16": True, "requested_weekday": "tuesday",
     })
     client = FakeClient(script=[
         FakeResponse(stop_reason="tool_use", content=[
@@ -279,7 +279,7 @@ def test_a_scripted_availability_then_booking_conversation_ends_in_one_reply():
     whether the model actually will -- that part rests on the prompt."""
     calendar = _calendar()
     ctx = _ctx(calendar, facts={
-        "is_first_colour_visit": False, "customer_age": 30, "requested_weekday": "tuesday",
+        "is_first_colour_visit": False, "customer_is_over_16": True, "requested_weekday": "tuesday",
     })
     client = FakeClient(script=[
         _tool_call("check_availability", {"service_id": "svc_colour_full"}, call_id="call_1"),
