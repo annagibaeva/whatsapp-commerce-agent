@@ -449,7 +449,22 @@ def build_serve_app(
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-    return create_app(settings, on_message, after_message=after_enqueue, lifespan=lifespan)
+    return create_app(
+        settings, on_message, after_message=after_enqueue, lifespan=lifespan,
+        calendar=calendar, catalogue=catalogue,
+    )
+
+
+def reminder_secret_from_env() -> str | None:
+    """The n8n shared secret, or `None` if it is not usable.
+
+    An empty `N8N_REMINDER_SECRET=` is treated exactly like an absent
+    one. An operator who adds the line and saves before filling it in
+    must get the same closed default as one who never added it, not a
+    shared secret of "". `verify_reminder_secret` refuses every request
+    when this is `None`, so closed is the failure mode either way.
+    """
+    return os.environ.get("N8N_REMINDER_SECRET") or None
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -465,12 +480,20 @@ def cmd_serve(args: argparse.Namespace) -> int:
     verify_token = os.environ.get("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
     phone_number_id = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
     access_token = os.environ.get("WHATSAPP_ACCESS_TOKEN")
+    reminder_secret = reminder_secret_from_env()
     if not secret or not verify_token:
         print("WHATSAPP_APP_SECRET and WHATSAPP_WEBHOOK_VERIFY_TOKEN must be set in .env")
         return 1
     if not phone_number_id or not access_token:
         print("WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_ACCESS_TOKEN must be set in .env")
         return 1
+    if not reminder_secret:
+        # Not fatal -- the WhatsApp webhook and the rest of `serve` work
+        # fine without the n8n hop turned on -- but silent is how a
+        # missing credential stays missing for weeks. See webhook.py's
+        # verify_reminder_secret: with no secret, /reminders/due and
+        # /reminders/sent refuse every request rather than allow them.
+        print("[serve] N8N_REMINDER_SECRET not set -- /reminders/* will refuse every request")
     if not os.environ.get("ANTHROPIC_API_KEY"):
         # Fail loudly here rather than let AnthropicExtractor() raise a
         # moment later -- and, far worse, rather than silently running
@@ -486,7 +509,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"[serve] loaded {env_path} (app_secret_len={len(secret)})")
 
     app = build_serve_app(
-        settings=WebhookSettings(app_secret=secret, verify_token=verify_token),
+        settings=WebhookSettings(
+            app_secret=secret, verify_token=verify_token, reminder_secret=reminder_secret,
+        ),
         ruleset=load_ruleset(args.rules),
         catalogue=load_catalogue(str(args.catalogue)),
         calendar=_demo_calendar(),
