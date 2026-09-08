@@ -42,6 +42,21 @@ class HoldRefused(Exception):
         self.reason = reason
 
 
+@dataclass(frozen=True)
+class Slot:
+    """A bookable slot with a real start time.
+
+    `hours_until_appointment` used to arrive as a fact from the model.
+    That let the thing the gate exists to check supply its own evidence.
+    A slot with a real `starts_at` lets code compute the number instead.
+    `starts_at` must be timezone-aware, same as every other time in this
+    codebase.
+    """
+
+    slot_id: str
+    starts_at: datetime | None = None
+
+
 @dataclass
 class Hold:
     hold_id: str
@@ -62,11 +77,44 @@ class Booking:
 
 @dataclass
 class MockCalendar:
-    slot_ids: list[str]
+    #: Bare ids, kept for the existing call site in harness.py that has
+    #: not moved to real Slot objects yet. Prefer `slots` for anything new.
+    slot_ids: list[str] = field(default_factory=list)
+    #: Slots with a real start time. A slot named only in `slot_ids` gets
+    #: a synthetic entry with `starts_at=None`, so `hours_until` for it
+    #: is `None` rather than a guess.
+    slots: tuple[Slot, ...] = ()
     _holds: dict[str, Hold] = field(default_factory=dict)
     _bookings: dict[str, Booking] = field(default_factory=dict)
     _by_key: dict[str, str] = field(default_factory=dict)
     _counter: int = 0
+    _slots_by_id: dict[str, Slot] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        by_id: dict[str, Slot] = {s.slot_id: s for s in self.slots}
+        for slot_id in self.slot_ids:
+            by_id.setdefault(slot_id, Slot(slot_id=slot_id, starts_at=None))
+        self._slots_by_id = by_id
+        # slot_ids is read everywhere below as "every id this calendar
+        # knows about". Normalize it to that once, here, so nothing else
+        # in this class has to care which constructor argument a slot
+        # came in on.
+        self.slot_ids = list(by_id.keys())
+
+    def slot(self, slot_id: str) -> Slot | None:
+        return self._slots_by_id.get(slot_id)
+
+    def hours_until(self, slot_id: str, now: datetime) -> float | None:
+        """Hours from `now` to the slot's start. `None` if unknown.
+
+        Not clamped. A slot in the past comes back negative, on purpose:
+        a caller that cannot tell "two hours away" from "yesterday"
+        cannot refuse a booking in the past.
+        """
+        found = self.slot(slot_id)
+        if found is None or found.starts_at is None:
+            return None
+        return (found.starts_at - now).total_seconds() / 3600
 
     def _live_hold_for(self, slot_id: str, now: datetime) -> Hold | None:
         for hold in self._holds.values():
@@ -144,11 +192,14 @@ class MockCalendar:
         """A read-only snapshot for the gate. The gate never mutates."""
         hold = self._live_hold_for(slot_id, now)
         booking = self._booking_for(slot_id)
+        slot = self.slot(slot_id)
         return {
             "slot_exists": slot_id in self.slot_ids,
             "booked": booking is not None,
             "held_by_thread": hold.thread_id if hold else None,
             "hold_id": hold.hold_id if hold else None,
+            "starts_at": slot.starts_at if slot else None,
+            "hours_until": self.hours_until(slot_id, now),
         }
 
     def bookings(self) -> tuple[Booking, ...]:
