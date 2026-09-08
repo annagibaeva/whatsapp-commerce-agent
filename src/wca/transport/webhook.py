@@ -20,9 +20,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from typing import Callable
+from typing import Any, Callable
 
-from fastapi import FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from wca.transport.base import InboundMessage
@@ -62,8 +62,25 @@ def verify_signature(app_secret: SecretStr, raw_body: bytes, header: str | None)
 def create_app(
     settings: WebhookSettings,
     on_message: Callable[[InboundMessage], None],
+    after_message: Callable[[InboundMessage], None] | None = None,
+    lifespan: Callable[[FastAPI], Any] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="WhatsApp Commerce Agent webhook")
+    """Build the webhook app.
+
+    `on_message` runs synchronously, in the request, for every parsed
+    message -- it must stay fast (see the module docstring: reply fast,
+    never wait for a model call). `after_message`, if given, is scheduled
+    as a FastAPI `BackgroundTasks` job per message instead: it runs after
+    the response has been sent, which is where slow work (draining a
+    conversation's queue, which can call a model) belongs. Left `None`,
+    nothing changes about the request beyond `on_message` itself --
+    existing callers that only need synchronous delivery are unaffected.
+
+    `lifespan` is passed straight through to `FastAPI(...)`, so `serve`
+    can start and stop the reaper and watchdog timers around the app's
+    life without this module knowing anything about schedulers.
+    """
+    app = FastAPI(title="WhatsApp Commerce Agent webhook", lifespan=lifespan)
 
     @app.get("/webhook")
     def handshake(request: Request) -> Response:
@@ -73,7 +90,7 @@ def create_app(
         return Response(content=params.get("hub.challenge", ""), media_type="text/plain")
 
     @app.post("/webhook")
-    async def receive(request: Request) -> Response:
+    async def receive(request: Request, background_tasks: BackgroundTasks) -> Response:
         raw = await request.body()
         header = request.headers.get("X-Hub-Signature-256")
         if not verify_signature(settings.app_secret, raw, header):
@@ -103,6 +120,8 @@ def create_app(
 
         for message in parse_inbound(payload):
             on_message(message)
+            if after_message is not None:
+                background_tasks.add_task(after_message, message)
 
         return Response(status_code=200)
 
