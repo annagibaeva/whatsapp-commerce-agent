@@ -160,3 +160,20 @@ CORRECTION TO MY OWN REPORTING: I told Anna the pipeline was "genuinely wired" a
 === n8n REQUIREMENTS (from Anna) ===
 n8n runs in the cloud. Trigger: 24 hours before an appointment, to confirm. Endpoint needs building.
 Consequences: the endpoint is PUBLIC (same host as the webhook) so it needs a shared secret, not open access. And a message 24h ahead falls OUTSIDE the WhatsApp service window, so it must be an approved template. Only hello_world is approved today. That approval gates the hop regardless of code and has real lead time.
+
+=== WEEKDAY BYPASS + UX ===
+Anna reported the agent asking the customer what today's date was. Checking that surfaced a second, worse problem.
+BYPASS: requested_weekday was model-supplied, and no_colour_on_sunday reads it. Reproduced: a Sunday slot BOOKED because the model claimed "tuesday". The rule never fired.
+This is the same class as hours_until_appointment, which I had already fixed. I fixed the instance I was shown and left its sibling. A review had told me I did exactly that once before with require_lead_time. Second time.
+
+Ruling 12: the principle, not the instance. A fact that describes the BOOKING must be derived from the booking. Only facts that describe the CUSTOMER may come from the conversation.
+— DERIVED_FACTS: service_category, quoted_price_minor (catalogue); hours_until_appointment, requested_weekday (slot).
+— CONVERSATIONAL_FACTS: is_first_colour_visit, customer_age. Only the customer knows these.
+— Both lists live in tools.py next to the derivation, with a test walking every fact the ruleset actually reads and failing if one is unclassified. That test is the point: it catches the NEXT sibling instead of waiting for someone to find it in production.
+— Cost if wrong: a genuinely conversational fact misfiled as derived would be silently overwritten. The test forces the classification to be deliberate.
+
+CONTROLLER-VERIFIED both directions: Sunday slot + model claims tuesday -> blocked, 0 bookings. Tuesday slot + model claims sunday -> BOOKED, 1 booking. The derived value wins either way, so the fix is not over-broad.
+
+UX: the system threads `now` through every function and never told the model. Fixed: the prompt renders {now} with the weekday, check_availability takes optional dates defaulting to a 14-day window, slots come back with labels like "Tuesday 25 August, 2:00pm", and the prompt now says act-then-confirm rather than interrogate.
+HONEST LIMIT: prompt adherence is not testable. The tests prove the wiring permits a single silent multi-tool turn. They cannot prove the model will actually act instead of asking. That only shows up on a real message.
+254 passed.
