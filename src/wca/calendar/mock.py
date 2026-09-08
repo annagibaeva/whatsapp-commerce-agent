@@ -12,6 +12,7 @@ for.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -67,6 +68,11 @@ class MockCalendar:
     _bookings: dict[str, Booking] = field(default_factory=dict)
     _by_key: dict[str, str] = field(default_factory=dict)
     _counter: int = 0
+    # Guards hold/commit/release/expire_due. Without it, two threads can
+    # both read "no live hold" before either writes one, and both end up
+    # holding the same slot. None of the guarded methods call another
+    # guarded method, so a plain Lock (not RLock) is enough.
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def _live_hold_for(self, slot_id: str, now: datetime) -> Hold | None:
         for hold in self._holds.values():
@@ -87,58 +93,74 @@ class MockCalendar:
         )
 
     def hold(self, slot_id: str, thread_id: str, now: datetime) -> Hold:
-        if slot_id not in self.slot_ids:
-            raise HoldRefused(RefusalReason.NO_SUCH_SLOT, slot_id)
-        if self._booking_for(slot_id) is not None:
-            raise HoldRefused(RefusalReason.ALREADY_BOOKED, slot_id)
-        if self._live_hold_for(slot_id, now) is not None:
-            raise HoldRefused(RefusalReason.ALREADY_HELD, slot_id)
+        # Locked so the "is it free" check and the "write the hold" write
+        # happen as one step. Without the lock, two threads can both see
+        # no live hold and both write one.
+        with self._lock:
+            if slot_id not in self.slot_ids:
+                raise HoldRefused(RefusalReason.NO_SUCH_SLOT, slot_id)
+            if self._booking_for(slot_id) is not None:
+                raise HoldRefused(RefusalReason.ALREADY_BOOKED, slot_id)
+            if self._live_hold_for(slot_id, now) is not None:
+                raise HoldRefused(RefusalReason.ALREADY_HELD, slot_id)
 
-        self._counter += 1
-        hold = Hold(
-            hold_id=make_hold_id(self._counter),
-            slot_id=slot_id,
-            thread_id=thread_id,
-            created_at=now,
-            expires_at=now + timedelta(seconds=HOLD_TTL_SECONDS),
-        )
-        self._holds[hold.hold_id] = hold
-        return hold
+            self._counter += 1
+            hold = Hold(
+                hold_id=make_hold_id(self._counter),
+                slot_id=slot_id,
+                thread_id=thread_id,
+                created_at=now,
+                expires_at=now + timedelta(seconds=HOLD_TTL_SECONDS),
+            )
+            self._holds[hold.hold_id] = hold
+            return hold
 
     def commit(self, hold_id: str, idempotency_key: str, now: datetime) -> Booking:
-        if idempotency_key in self._by_key:
-            return self._bookings[self._by_key[idempotency_key]]
+        # Locked for the same reason as hold(): check-then-write must not
+        # be split across two threads.
+        with self._lock:
+            if idempotency_key in self._by_key:
+                return self._bookings[self._by_key[idempotency_key]]
 
-        hold = self._holds.get(hold_id)
-        if hold is None or hold.released:
-            raise HoldRefused(RefusalReason.NO_SUCH_HOLD, hold_id)
-        if hold.expires_at <= now:
-            raise HoldRefused(RefusalReason.HOLD_EXPIRED, hold_id)
+            hold = self._holds.get(hold_id)
+            if hold is None or hold.released:
+                raise HoldRefused(RefusalReason.NO_SUCH_HOLD, hold_id)
+            if hold.expires_at <= now:
+                raise HoldRefused(RefusalReason.HOLD_EXPIRED, hold_id)
+            # Re-check for a booking made under a different hold on this
+            # slot. Two holds can both be live (e.g. one just expired and
+            # was replaced) only if something upstream already went
+            # wrong, but this is the last line of defense: one booking
+            # per slot, no matter how many live holds point at it.
+            if self._booking_for(hold.slot_id) is not None:
+                raise HoldRefused(RefusalReason.ALREADY_BOOKED, hold.slot_id)
 
-        booking = Booking(
-            booking_id=f"bk_{hold.hold_id}",
-            slot_id=hold.slot_id,
-            thread_id=hold.thread_id,
-            booked_at=now,
-        )
-        self._bookings[booking.booking_id] = booking
-        self._by_key[idempotency_key] = booking.booking_id
-        hold.released = True
-        return booking
+            booking = Booking(
+                booking_id=f"bk_{hold.hold_id}",
+                slot_id=hold.slot_id,
+                thread_id=hold.thread_id,
+                booked_at=now,
+            )
+            self._bookings[booking.booking_id] = booking
+            self._by_key[idempotency_key] = booking.booking_id
+            hold.released = True
+            return booking
 
     def release(self, hold_id: str, reason: str, now: datetime) -> None:
-        hold = self._holds.get(hold_id)
-        if hold is not None:
-            hold.released = True
+        with self._lock:
+            hold = self._holds.get(hold_id)
+            if hold is not None:
+                hold.released = True
 
     def expire_due(self, now: datetime) -> list[Hold]:
-        expired = [
-            h for h in self._holds.values()
-            if not h.released and h.expires_at <= now
-        ]
-        for hold in expired:
-            hold.released = True
-        return expired
+        with self._lock:
+            expired = [
+                h for h in self._holds.values()
+                if not h.released and h.expires_at <= now
+            ]
+            for hold in expired:
+                hold.released = True
+            return expired
 
     def view(self, slot_id: str, now: datetime) -> dict[str, Any]:
         """A read-only snapshot for the gate. The gate never mutates."""
