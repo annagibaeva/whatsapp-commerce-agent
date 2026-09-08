@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 from wca.calendar.mock import MockCalendar, Slot
 from wca.catalogue import load_catalogue
 from wca.cli import build_serve_app
-from wca.extract.base import RawFactSet
+from wca.extract.base import ExtractionResult, RawFactSet
 from wca.extract.fake import FakeExtractor
 from wca.rules.store import load_ruleset
 from wca.transport.fake import FakeTransport
@@ -476,6 +476,109 @@ def test_an_unexpected_failure_in_the_job_still_sends_one_fallback_message():
     sent = transport.sent()
     assert len(sent) == 1
     assert sent[0].body  # the fallback, not silence
+
+
+# --- Cause 1: the extractor receives role-labelled history, not flat text ---
+
+def test_cli_hands_the_extractor_role_labelled_history_not_flat_strings():
+    """Before this fix, wca.cli built thread_history with roles and then
+    called the extractor with `[turn["content"] for turn in
+    thread_history]`, throwing the roles away. Proves the extractor now
+    receives the exact same {"role": ..., "content": ...} shape
+    thread_history carries -- what prompts/extract-v0.1.md's role
+    attribution (Cause 2) depends on."""
+    seen: list[list[dict[str, str]]] = []
+
+    class _RecordingExtractor:
+        version = "recording-v0"
+
+        def extract(self, message_id: str, text: str, thread: Any) -> ExtractionResult:
+            seen.append(list(thread))
+            return ExtractionResult(message_id=message_id, facts={})
+
+    app, transport, client = _build(extractor=_RecordingExtractor())
+    tc = TestClient(app)
+    same_thread = "447700900030"
+
+    _post(tc, "wamid.role_1", same_thread, "hi")
+    _post(tc, "wamid.role_2", same_thread, "book me a cut")
+
+    assert seen[0] == []
+    assert seen[1] == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "ok: hi"},
+    ]
+    assert all(set(turn) == {"role", "content"} for turn in seen[1])
+
+
+# --- Cause 3: the ask-loop guard escalates instead of asking a third time ---
+
+def test_a_fact_asked_about_twice_with_no_answer_escalates_on_the_third_message():
+    """Regression test for the live thread this task exists to fix: the
+    salon owner said "yes" to "are you 16 or over?" and the agent kept
+    asking anyway, four times. wca.cli.MAX_ASKS_PER_FACT caps how many
+    times one thread can ask about the same customer-only fact
+    (wca.tools.CONVERSATIONAL_FACTS), independent of anything the model
+    says. Here the extractor never returns the fact (the worst case: not
+    even an accepted answer reaches conversation.facts) and the model
+    always just asks a question in plain text -- no tool call at all, so
+    the guard cannot be relying on a request_booking audit trail. The
+    third message must escalate rather than ask a third time, and the
+    model must not even be called for it -- the scripted client only
+    carries two responses, so a third call raises AssertionError."""
+    extractor = FakeExtractor(script={
+        "wamid.ask_1": RawFactSet(service_category="colour", is_first_colour_visit=False),
+        # Every later message: no facts at all, however the customer
+        # actually answered.
+    })
+    client = _ScriptedClient(script=[
+        _final_text("Are you 16 or over?"),
+        _final_text("Sorry -- are you under 16, or 16 and over?"),
+    ])
+    app, transport, _ = _build(extractor=extractor, client=client)
+    tc = TestClient(app)
+    same_thread = "447700900031"
+
+    _post(tc, "wamid.ask_1", same_thread, "I'd like a full colour please")
+    _post(tc, "wamid.ask_2", same_thread, "yes")
+    r = _post(tc, "wamid.ask_3", same_thread, "yes, I'm over 16")
+
+    assert r.status_code == 200
+    assert len(client.messages.calls) == 2  # never called a third time
+    sent = transport.sent()
+    assert len(sent) == 3
+    assert sent[0].body == "Are you 16 or over?"
+    assert sent[1].body == "Sorry -- are you under 16, or 16 and over?"
+    import wca.cli as cli
+    assert sent[2].body == cli.FALLBACK_REPLY  # escalated, not asked a third time
+
+
+def test_answering_the_fact_resets_the_ask_counter():
+    """The guard must not fire just because a fact was asked about once
+    or twice earlier in the conversation -- only when it is STILL
+    missing. Once the extractor actually reports the fact, the counter
+    resets and a later, unrelated question does not trip the guard."""
+    extractor = FakeExtractor(script={
+        "wamid.reset_1": RawFactSet(service_category="colour"),
+        "wamid.reset_2": RawFactSet(),
+        "wamid.reset_3": RawFactSet(customer_is_over_16=True, is_first_colour_visit=False),
+        "wamid.reset_4": RawFactSet(),
+        "wamid.reset_5": RawFactSet(),
+        "wamid.reset_6": RawFactSet(),
+    })
+    client = _ScriptedClient(script=[_final_text("ok") for _ in range(6)])
+    app, transport, _ = _build(extractor=extractor, client=client)
+    tc = TestClient(app)
+    same_thread = "447700900032"
+
+    for i in range(1, 7):
+        r = _post(tc, f"wamid.reset_{i}", same_thread, f"message {i}")
+        assert r.status_code == 200
+
+    # All six reached the model -- the fact was resolved on message 3,
+    # before the two-strikes cap on the (now irrelevant) earlier asks
+    # could trip.
+    assert len(client.messages.calls) == 6
 
 
 # --- I7: a per-sender budget bounds spend -------------------------------------

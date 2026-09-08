@@ -17,9 +17,11 @@ from wca.catalogue import load_catalogue
 from wca.clock import utc
 from wca.escalation import Template, TemplateRegistry
 from wca.harness import run_cases
+from wca.rules.evaluate import missing_facts
 from wca.rules.render import to_english
+from wca.rules.specificity import unknown_rules
 from wca.rules.store import load_ruleset
-from wca.tools import ESCALATION_REASONS
+from wca.tools import CONVERSATIONAL_FACTS, ESCALATION_REASONS
 
 DEFAULT_RULES = Path("policy/salon.rules.json")
 DEFAULT_CATALOGUE = Path("policy/salon.catalogue.json")
@@ -67,6 +69,50 @@ MESSAGE_BUDGET_WINDOW_SECONDS = 3600.0
 #: separately) are replayed to the model on the next turn. Unbounded
 #: history would grow every request's token cost forever; this caps it.
 MAX_HISTORY_MESSAGES = 20
+
+#: A prompt is a request, not a guarantee -- a model that ignores its
+#: instructions can keep asking the same customer-only fact
+#: (`wca.tools.CONVERSATIONAL_FACTS`) forever, which is exactly what
+#: happened on the live thread this task exists to fix: four escalating
+#: variations of "are you over 16?" to one customer, none of them ever
+#: accepting her answer.
+#:
+#: This is the hard stop, independent of anything a prompt says. Whether
+#: a fact is still needed is computed the same way `wca.tools
+#: .request_booking` computes it -- `unknown_rules` + `missing_facts`
+#: against the ruleset, not by reading the model's reply text -- so it
+#: is exact about which fact is actually blocking a decision and immune
+#: to how the model happens to have phrased the question. Two turns get
+#: to ask; the third message for a still-unanswered fact escalates
+#: instead of asking again.
+MAX_ASKS_PER_FACT = 2
+
+#: The registered reason (see `wca.tools.ESCALATION_REASONS` and
+#: `REGISTRY` below) used when MAX_ASKS_PER_FACT trips: a customer-only
+#: fact that keeps not arriving is a conversation the agent cannot
+#: complete on its own -- not a policy question, not a technical fault --
+#: which is exactly what "outside_agent_scope" is for.
+ASK_LOOP_ESCALATION_REASON = "outside_agent_scope"
+
+
+def _facts_still_needed(ruleset: Any, facts: dict[str, Any]) -> set[str]:
+    """Which `CONVERSATIONAL_FACTS` a rule that could still apply is
+    missing, given what the conversation knows so far.
+
+    Same two functions `wca.tools.request_booking` uses to build the
+    "ask" question for a proposal -- `unknown_rules` (a rule whose
+    condition cannot yet be decided true or false) and `missing_facts`
+    (which of that rule's facts we don't have) -- called here directly,
+    read-only, with no slot and no proposal, purely to answer "is this
+    fact still blocking something" for the loop guard below. A booking
+    that has already been decided (a rule matched TRUE or FALSE) never
+    shows up here, so a fact irrelevant to what the customer actually
+    asked for -- age, for a haircut -- never counts against the guard.
+    """
+    needed: set[str] = set()
+    for rule in unknown_rules(ruleset, facts):
+        needed.update(missing_facts(rule, facts))
+    return needed & CONVERSATIONAL_FACTS
 
 
 def _demo_slots(
@@ -208,6 +254,7 @@ def build_serve_app(
         run_periodically,
     )
     from wca.tools import ToolContext
+    from wca.tools import escalate as escalate_tool  # the ask-loop guard's own escalation
     from wca.transport.webhook import create_app
 
     audit = audit if audit is not None else AuditLog()
@@ -218,13 +265,17 @@ def build_serve_app(
     reap_interval = reap_interval_seconds or DEFAULT_REAP_INTERVAL_SECONDS
     watchdog_interval = watchdog_interval_seconds or DEFAULT_WATCHDOG_INTERVAL_SECONDS
 
-    # Per-thread message history (for the model) and send timestamps (for
-    # the budget below). Both are plain in-memory dicts, same posture as
-    # DedupStore and ConversationStore: v0, never evicted, good enough for
-    # a demo deployment. Kept here rather than on ConversationState so
-    # this task's fix stays inside wca.cli.
+    # Per-thread message history (for the model), send timestamps (for
+    # the budget below), and the ask-loop guard's own counters. All three
+    # are plain in-memory dicts, same posture as DedupStore and
+    # ConversationStore: v0, never evicted, good enough for a demo
+    # deployment. Kept here rather than on ConversationState so this
+    # task's fix stays inside wca.cli.
     histories: dict[str, list[dict[str, str]]] = defaultdict(list)
     send_times: dict[str, list[datetime]] = defaultdict(list)
+    #: thread_id -> {fact_name: consecutive turns asked with no answer}.
+    #: See MAX_ASKS_PER_FACT above.
+    ask_counts: dict[str, dict[str, int]] = defaultdict(dict)
 
     def _over_budget(thread_id: str, now: datetime) -> bool:
         window_start = now - timedelta(seconds=MESSAGE_BUDGET_WINDOW_SECONDS)
@@ -232,6 +283,25 @@ def build_serve_app(
         recent.append(now)
         send_times[thread_id] = recent
         return len(recent) > MAX_MESSAGES_PER_WINDOW
+
+    def _record_new_escalations(before: int) -> None:
+        # Anything this turn escalated is now something the watchdog
+        # needs to know about. Read it off the audit trail rather than
+        # threading a callback into wca.tools.escalate, which this task
+        # does not touch. Shared by the normal agent path and the ask-loop
+        # guard's own direct call to wca.tools.escalate below -- both
+        # append to the same audit log, so both need the same bookkeeping.
+        for record in audit.records()[before:]:
+            if record.verdict.allowed and record.proposal.action.type == "escalate":
+                escalations.add(EscalationTicket(
+                    thread_id=record.proposal.thread_id,
+                    reason=record.proposal.action.escalation_reason or "",
+                    raised_at=record.decided_at,
+                    window_closes_at=datetime.fromisoformat(
+                        record.window_read["window_closes_at"]
+                    ),
+                    template_name=record.window_read.get("template_name") or "",
+                ))
 
     def run_job(message: Any) -> None:
         # 1. Dedup, inside the job -- see the docstring above for why.
@@ -274,39 +344,61 @@ def build_serve_app(
             extraction = extractor.extract(
                 message.message_id,
                 message.text,
-                [turn["content"] for turn in thread_history],
+                thread_history,
             )
             state.add_facts(extraction.facts, now=now)
 
-            # 5. One Agent turn with the tool context and the thread's
-            # recent turns, not just the current message -- otherwise no
-            # conversation history ever reaches the model.
             ctx = ToolContext(
                 ruleset=ruleset, catalogue=catalogue, calendar=calendar,
                 registry=registry, audit=audit, conversation=state, now=now,
             )
-            agent = Agent(client=client, tool_context=ctx)
-            turn_messages = [*thread_history, {"role": "user", "content": message.text}]
-            before = len(audit)
-            reply = agent.run_turn(turn_messages)
 
-            # Anything this turn escalated is now something the watchdog
-            # needs to know about. Read it off the audit trail rather than
-            # threading a callback into wca.tools.escalate, which this task
-            # does not touch.
-            for record in audit.records()[before:]:
-                if record.verdict.allowed and record.proposal.action.type == "escalate":
-                    escalations.add(EscalationTicket(
-                        thread_id=record.proposal.thread_id,
-                        reason=record.proposal.action.escalation_reason or "",
-                        raised_at=record.decided_at,
-                        window_closes_at=datetime.fromisoformat(
-                            record.window_read["window_closes_at"]
-                        ),
-                        template_name=record.window_read.get("template_name") or "",
-                    ))
+            # 5. The ask-loop guard: which customer-only facts this
+            # thread's earlier turns have already asked about
+            # MAX_ASKS_PER_FACT times with no answer captured, and are
+            # still needed now. If there is one, this message does not
+            # reach the model at all -- a third ask never happens, no
+            # matter what the model would have said. See MAX_ASKS_PER_FACT
+            # above for why this cannot be a prompt instruction instead.
+            fact_asks = ask_counts[message.thread_id]
+            needed = _facts_still_needed(ruleset, state.facts)
+            stuck = sorted(f for f in needed if fact_asks.get(f, 0) >= MAX_ASKS_PER_FACT)
 
-            # 6. Never leave the customer with silence. Hitting the
+            if stuck:
+                print(
+                    f"[serve] thread {message.thread_id} asked about "
+                    f"{stuck} {MAX_ASKS_PER_FACT} times with no answer; "
+                    "escalating instead of asking again"
+                )
+                before = len(audit)
+                escalate_tool(ctx, ASK_LOOP_ESCALATION_REASON)
+                _record_new_escalations(before)
+                reply = FALLBACK_REPLY
+            else:
+                # 6. One Agent turn with the tool context and the thread's
+                # recent turns, not just the current message -- otherwise no
+                # conversation history ever reaches the model.
+                agent = Agent(client=client, tool_context=ctx)
+                turn_messages = [*thread_history, {"role": "user", "content": message.text}]
+                before = len(audit)
+                reply = agent.run_turn(turn_messages)
+                _record_new_escalations(before)
+
+                # Still needed after this turn's own attempt (extraction
+                # already ran above; nothing else in this turn writes to
+                # conversation.facts) counts as one more ask towards the
+                # cap. A fact that got answered resets to zero rather than
+                # just stopping -- if it comes back into question later
+                # (the customer changes their mind, a later message
+                # contradicts an earlier answer), it gets the same two
+                # tries again, not zero.
+                for fact in CONVERSATIONAL_FACTS:
+                    if fact in needed:
+                        fact_asks[fact] = fact_asks.get(fact, 0) + 1
+                    else:
+                        fact_asks[fact] = 0
+
+            # 7. Never leave the customer with silence. Hitting the
             # iteration cap with no final text is an availability trade,
             # not a safety one (see wca.agent's MAX_ITERATIONS docstring)
             # -- but the customer still needs an answer.
