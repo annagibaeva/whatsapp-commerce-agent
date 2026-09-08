@@ -50,3 +50,23 @@ def test_the_extractor_never_returns_a_rule_or_an_action():
     fields = set(RawFactSet.model_fields)
     for banned in ("rule", "rules", "cited_rules", "action", "book", "decision"):
         assert banned not in fields
+
+
+# --- Cause 2: a bare answer resolves against the question just asked --------
+
+def test_the_prompt_tells_the_extractor_to_resolve_a_short_answer_against_the_last_question():
+    text = load_prompt("extract-v0.1")
+    lowered = text.lower()
+    assert "agent:" in lowered and "customer:" in lowered
+    # The boundary between "resolving" and "guessing" must be explicit,
+    # not left implicit -- see prompts/extract-v0.1.md rule 4.
+    assert "not the guessing" in lowered or "not guessing" in lowered
+
+
+def test_the_prompt_gives_one_worked_example_of_resolving_and_one_of_guessing():
+    text = load_prompt("extract-v0.1")
+    # Resolving: "yes" under an agent question about age settles the fact.
+    assert "customer_is_over_16: true" in text
+    # Guessing: a bare "yes" to one question says nothing about the other.
+    assert "is_first_colour_visit: false" in text
+    assert "stays out" in text.lower()

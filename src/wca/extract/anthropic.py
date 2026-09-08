@@ -13,13 +13,20 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from wca.extract.base import ExtractionResult, RawFactSet, build_facts, load_prompt
+
+#: `thread_history`'s own roles ("user" for the customer, "assistant" for
+#: the agent) are not the words a customer reads when this is rendered
+#: into the prompt -- `customer`/`agent` are. Anything else (a role this
+#: codebase never produces) is rendered as-is rather than dropped, so a
+#: future role does not silently vanish from what the model sees.
+ROLE_LABELS: dict[str, str] = {"user": "customer", "assistant": "agent"}
 
 SMALL_MODEL = "claude-haiku-4-5"
 LARGE_MODEL = "claude-opus-5"
@@ -30,6 +37,14 @@ PRICES = {
     SMALL_MODEL: {"input": 1.00, "output": 5.00},
     LARGE_MODEL: {"input": 5.00, "output": 25.00},
 }
+
+
+def _render_turn(turn: Mapping[str, str]) -> str:
+    """One line of `{thread}`, attributed -- `  customer: ...` or `  agent:
+    ...` -- so the model can tell a customer's answer from the agent's own
+    question instead of seeing a flat, unattributed list of lines."""
+    role = ROLE_LABELS.get(turn.get("role", ""), turn.get("role", "?"))
+    return f"  {role}: {turn.get('content', '')}"
 
 
 class AnthropicExtractor:
@@ -50,10 +65,10 @@ class AnthropicExtractor:
         self._template = load_prompt(version)
 
     def extract(
-        self, message_id: str, text: str, thread: Sequence[str]
+        self, message_id: str, text: str, thread: Sequence[Mapping[str, str]]
     ) -> ExtractionResult:
         prompt = self._template.format(
-            thread="\n".join(f"  {line}" for line in thread[-6:]) or "  (nothing yet)",
+            thread="\n".join(_render_turn(turn) for turn in thread[-6:]) or "  (nothing yet)",
             message=text,
         )
         started = time.perf_counter()

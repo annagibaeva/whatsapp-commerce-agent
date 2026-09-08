@@ -9,7 +9,7 @@ anything.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, Protocol, Sequence
+from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,8 +53,15 @@ class Extractor(Protocol):
     version: str
 
     def extract(
-        self, message_id: str, text: str, thread: Sequence[str]
-    ) -> ExtractionResult: ...
+        self, message_id: str, text: str, thread: Sequence[Mapping[str, str]]
+    ) -> ExtractionResult:
+        """`thread` carries each past turn's role alongside its content --
+        `{"role": "user" | "assistant", "content": ...}`, the same shape
+        `wca.cli` already builds. Without the role, a bare "yes" has
+        nothing to resolve against: the extractor cannot tell a customer's
+        answer from the agent's own question, so it reports nothing and
+        the agent asks again. See `prompts/extract-v0.1.md`."""
+        ...
 
 
 def build_facts(raw: RawFactSet) -> dict[str, Any]:

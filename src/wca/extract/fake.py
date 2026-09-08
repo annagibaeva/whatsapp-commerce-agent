@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from wca.extract.base import ExtractionResult, RawFactSet, build_facts
 
@@ -14,7 +14,7 @@ class FakeExtractor:
         self._script = script
 
     def extract(
-        self, message_id: str, text: str, thread: Sequence[str]
+        self, message_id: str, text: str, thread: Sequence[Mapping[str, str]]
     ) -> ExtractionResult:
         raw = self._script.get(message_id)
         return ExtractionResult(
