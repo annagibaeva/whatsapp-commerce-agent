@@ -74,6 +74,16 @@ class Booking:
     slot_id: str
     thread_id: str
     booked_at: datetime
+    #: The service this booking is for, so `/reminders/due` can report a
+    #: service name without guessing. `None` only for a booking made
+    #: before this field existed, or through a test that never passed one.
+    service_id: str | None = None
+    #: `None` until n8n confirms it sent the 24-hour-ahead reminder via
+    #: `POST /reminders/sent`. Set once and never moved after that --
+    #: see `mark_reminded` -- so a booking that was reminded once stops
+    #: showing up in `/reminders/due` for good, and a redelivered "sent"
+    #: call cannot make the first mark's timestamp drift.
+    reminder_sent_at: datetime | None = None
 
 
 @dataclass
@@ -164,7 +174,9 @@ class MockCalendar:
             self._holds[hold.hold_id] = hold
             return hold
 
-    def commit(self, hold_id: str, idempotency_key: str, now: datetime) -> Booking:
+    def commit(
+        self, hold_id: str, idempotency_key: str, now: datetime, service_id: str | None = None
+    ) -> Booking:
         # Locked for the same reason as hold(): check-then-write must not
         # be split across two threads.
         with self._lock:
@@ -189,11 +201,57 @@ class MockCalendar:
                 slot_id=hold.slot_id,
                 thread_id=hold.thread_id,
                 booked_at=now,
+                service_id=service_id,
             )
             self._bookings[booking.booking_id] = booking
             self._by_key[idempotency_key] = booking.booking_id
             hold.released = True
             return booking
+
+    def mark_reminded(self, booking_id: str, now: datetime) -> Booking | None:
+        """Record that n8n has sent the 24-hour reminder for this booking.
+
+        Idempotent: a booking already marked keeps its original
+        `reminder_sent_at` -- a redelivered `POST /reminders/sent` (the
+        same at-least-once delivery the webhook itself has to tolerate,
+        see the module docstring) must not move the timestamp forward on
+        a second call. Returns `None` for an unknown booking id, so the
+        caller can tell "already marked" (a `Booking` whose
+        `reminder_sent_at` predates `now`) from "no such booking" (a 404
+        upstream) -- collapsing the two would make a typo'd booking id
+        silently look like a success.
+        """
+        with self._lock:
+            booking = self._bookings.get(booking_id)
+            if booking is None:
+                return None
+            if booking.reminder_sent_at is None:
+                booking.reminder_sent_at = now
+            return booking
+
+    def due_reminders(self, within_hours: float, now: datetime) -> list[Booking]:
+        """Every booking starting within `within_hours` that has not been
+        reminded yet.
+
+        No lower bound on how soon: a booking that slipped past its own
+        appointment time without ever being marked keeps appearing here,
+        the same way `hours_until` keeps returning a negative number
+        instead of clamping to zero (see its docstring) -- a caller that
+        cannot tell "about to start" from "already happened" cannot
+        decide whether to still send a reminder. It is `POST
+        /reminders/sent`, not a time cutoff, that makes a booking stop
+        appearing.
+        """
+        due: list[Booking] = []
+        for booking in self._bookings.values():
+            if booking.reminder_sent_at is not None:
+                continue
+            hours = self.hours_until(booking.slot_id, now)
+            if hours is None:
+                continue
+            if hours <= within_hours:
+                due.append(booking)
+        return due
 
     def release(self, hold_id: str, reason: str, now: datetime) -> None:
         with self._lock:

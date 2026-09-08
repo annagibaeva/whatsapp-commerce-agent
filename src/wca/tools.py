@@ -83,12 +83,17 @@ def _weekday_of(starts_at: datetime) -> str:
     return WEEKDAY_NAMES[starts_at.weekday()]
 
 
-def _human_slot_label(starts_at: datetime) -> str:
+def human_slot_label(starts_at: datetime) -> str:
     """"Tuesday 25 August, 2:00pm" -- for the model to quote back verbatim.
 
     Weekday names and 12-hour clock arithmetic are exactly the kind of
     thing a model gets wrong when asked to compute them from an ISO
     timestamp. Precomputing the label here means it never has to.
+
+    Not private: `wca.transport.webhook`'s `/reminders/due` endpoint
+    reuses this so n8n gets the same "Tuesday 25 August, 2:00pm" label
+    `check_availability` already produces, rather than a second,
+    independently-drifting copy of this formatting.
     """
     hour12 = starts_at.hour % 12 or 12
     period = "am" if starts_at.hour < 12 else "pm"
@@ -157,7 +162,7 @@ def check_availability(
             results.append({
                 "slot_id": slot.slot_id,
                 "starts_at": slot.starts_at.isoformat(),
-                "label": _human_slot_label(slot.starts_at),
+                "label": human_slot_label(slot.starts_at),
             })
 
     results.sort(key=lambda r: r["starts_at"])
@@ -287,7 +292,9 @@ def request_booking(ctx: ToolContext, service_id: str, slot_id: str) -> dict[str
             key = make_idempotency_key(
                 ctx.conversation.thread_id, "book", {"service_id": service_id, "slot_id": slot_id}
             )
-            booking = ctx.calendar.commit(hold.hold_id, idempotency_key=key, now=ctx.now)
+            booking = ctx.calendar.commit(
+                hold.hold_id, idempotency_key=key, now=ctx.now, service_id=service_id
+            )
             ctx._booked_this_turn = True
             result: dict[str, Any] = {
                 "ok": True,
