@@ -26,6 +26,14 @@ MODEL = "claude-haiku-4-5"
 
 SYSTEM_PROMPT_VERSION = "agent-v0.1"
 
+#: Rendered into the system prompt's `{now}` placeholder so the model
+#: knows the date without ever calling `datetime.now()` itself -- nothing
+#: in this codebase does that, `now` is always the value the caller
+#: passed in (see `wca.clock`). Includes the weekday because the model
+#: reasons about "is this Sunday" in its replies and getting that wrong
+#: is a worse failure than getting the calendar date wrong.
+NOW_FORMAT = "%A, %d %B %Y, %H:%M UTC"
+
 #: How many request/execute/respond rounds one turn is allowed. A
 #: well-behaved conversation finishes in one or two: look something up,
 #: propose a booking, answer. If the cap is hit while the model still
@@ -57,7 +65,12 @@ class Agent:
         self._client = client
         self._tools = tool_context
         self.model = model
-        self.system = load_prompt(SYSTEM_PROMPT_VERSION)
+        # Formatted once, from the `now` this turn's ToolContext already
+        # carries -- never `datetime.now()`. A fresh Agent is built every
+        # turn (see wca.cli.run_job), so this is naturally turn-fresh too.
+        self.system = load_prompt(SYSTEM_PROMPT_VERSION).format(
+            now=tool_context.now.strftime(NOW_FORMAT)
+        )
 
     def _call(self, history: list[dict[str, Any]]) -> Any:
         return self._client.messages.create(

@@ -38,11 +38,11 @@ def _calendar() -> MockCalendar:
     ])
 
 
-def _ctx(calendar: MockCalendar, facts: dict | None = None) -> ToolContext:
-    conversation = ConversationState(thread_id="t1", last_inbound_at=NOW, facts=dict(facts or {}))
+def _ctx(calendar: MockCalendar, facts: dict | None = None, now=NOW) -> ToolContext:
+    conversation = ConversationState(thread_id="t1", last_inbound_at=now, facts=dict(facts or {}))
     return ToolContext(
         ruleset=RULES, catalogue=CATALOGUE, calendar=calendar,
-        registry=REGISTRY, audit=AuditLog(), conversation=conversation, now=NOW,
+        registry=REGISTRY, audit=AuditLog(), conversation=conversation, now=now,
     )
 
 
@@ -218,3 +218,34 @@ def test_no_scripted_call_ever_carries_a_sampling_parameter():
     for call in client.messages.calls:
         for banned in ("temperature", "top_p", "top_k"):
             assert banned not in call
+
+
+# --- the system prompt carries the current date, from `now`, not the wall --
+
+def test_the_system_prompt_carries_ctxs_now_including_the_weekday():
+    """A real customer asked for an appointment and the agent asked what
+    today's date is -- the model was never told. NOW here is a Friday;
+    the rendered prompt must say so, not leave the model to guess or
+    compute it, and it must come from ctx.now, not datetime.now()."""
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+    client = FakeClient(script=[_final_text("hello")])
+
+    agent = Agent(client=client, tool_context=ctx)
+
+    assert "Friday" in agent.system
+    assert "21 August 2026" in agent.system
+
+
+def test_the_system_prompt_changes_with_ctxs_now():
+    """Proves the rendered date actually comes from ctx.now (not a
+    hardcoded string, and not the wall clock): a different `now` on the
+    context produces a different system prompt."""
+    calendar = _calendar()
+    ctx = _ctx(calendar, now=NOW + timedelta(days=2))  # Sunday
+    client = FakeClient(script=[_final_text("hello")])
+
+    agent = Agent(client=client, tool_context=ctx)
+
+    assert "Sunday" in agent.system
+    assert "23 August 2026" in agent.system
