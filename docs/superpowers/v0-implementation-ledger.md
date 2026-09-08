@@ -133,4 +133,7 @@ check_decidable and outcomes_conflict DELETED. They were dead code carrying a do
 Scope agreed: (1) fix the lead-time hole, (2) locks on the calendar and the per-thread queue, (3) wire the worker so on_message runs the real pipeline in the background, (4) reaper and escalation-watchdog timers.
 Classified bounded, not architectural: the design was presented and approved, and every flow being changed already exists. No plan document.
 Steps 1 and 2 are disjoint (gate.py vs calendar/mock.py + conversation/queue.py) so they run as parallel worktree agents. Steps 3 and 4 are sequential behind them.
-Deferred to a later pass, agreed with Anna: the mock catalogue and the tool-use loop. Those change the model's role from fact extractor to actor and need their own spec addendum.
+FULL SCOPE (Anna confirmed all eight): 1 lead-time hole, 2 locks, 3 mock catalogue, 4 tool loop, 5 wire the worker, 6 timers, 7 n8n reminder hop, 8 live thread end to end.
+Spec addendum written at docs/superpowers/specs/2026-08-21-wca-v0-addendum-tools.md covering the catalogue shape and the four tool contracts.
+The addendum restates the security invariant honestly. Old wording: "no output the model can produce is able to book anything". That stops being true once request_booking exists. New wording: every booking is preceded by a gate PASS on a proposal built from the conversation facts, and no code path commits a slot without one. Weaker sentence, identical effect, and more demonstrable.
+It also closes audit finding 2: slots gain a real starts_at, hours_until_appointment is computed in code, and the field is removed from the model wire schema. Today the one number standing between a first colour visit and a booking is supplied by the thing the gate exists to check.
