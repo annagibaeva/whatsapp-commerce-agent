@@ -249,3 +249,53 @@ def test_the_system_prompt_changes_with_ctxs_now():
 
     assert "Sunday" in agent.system
     assert "23 August 2026" in agent.system
+
+
+def test_the_rendered_prompt_leaves_no_placeholder_braces_behind():
+    """`{now}` must actually be substituted -- a leftover `{` or `}` in the
+    rendered prompt would mean either an unfilled placeholder or a stray
+    literal brace in the template that `.format()` would choke on or
+    silently mishandle. Since the template's only placeholder is `{now}`,
+    a fully rendered prompt should carry no braces at all."""
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+    client = FakeClient(script=[_final_text("hello")])
+
+    agent = Agent(client=client, tool_context=ctx)
+
+    assert "{" not in agent.system
+    assert "}" not in agent.system
+
+
+# --- the loop supports acting and confirming in a single turn ---------------
+
+def test_a_scripted_availability_then_booking_conversation_ends_in_one_reply():
+    """Wiring test, not a behaviour test: scripts the model checking
+    availability with no dates (the fixed plumbing bug -- it no longer
+    needs one), requesting a booking, and then returning text, and
+    asserts the loop runs that through to a single final reply rather
+    than stopping partway and leaving the customer with a question. This
+    proves the loop *supports* acting in one turn; it says nothing about
+    whether the model actually will -- that part rests on the prompt."""
+    calendar = _calendar()
+    ctx = _ctx(calendar, facts={
+        "is_first_colour_visit": False, "customer_age": 30, "requested_weekday": "tuesday",
+    })
+    client = FakeClient(script=[
+        _tool_call("check_availability", {"service_id": "svc_colour_full"}, call_id="call_1"),
+        _tool_call(
+            "request_booking",
+            {"service_id": "svc_colour_full", "slot_id": LATER_SLOT},
+            call_id="call_2",
+        ),
+        _final_text("Of course -- I've got you booked for Thursday at 10am."),
+    ])
+    agent = Agent(client=client, tool_context=ctx)
+
+    reply = agent.run_turn([{"role": "user", "content": "can I get a full colour Thursday morning"}])
+
+    assert len(calendar.bookings()) == 1
+    assert reply == "Of course -- I've got you booked for Thursday at 10am."
+    # Two tool rounds plus the final text-only response: no intermediate
+    # question broke the loop, and only one reply was ever produced.
+    assert len(client.messages.calls) == 3
