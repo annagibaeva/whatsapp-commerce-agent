@@ -139,6 +139,38 @@ def test_a_legitimate_multi_tool_conversation_books_once():
     assert len(client.messages.calls) == 3
 
 
+def test_two_request_booking_calls_in_one_response_produce_only_one_booking():
+    """I6: the agent loop dispatches every tool_use block in a response.
+
+    Scripted as a single model response carrying two request_booking
+    tool_use blocks for two different slots, both of which would pass
+    the gate on their own. Only the first may succeed; the second must
+    come back refused, and the calendar must show exactly one booking.
+    """
+    calendar = _calendar()
+    ctx = _ctx(calendar, facts={
+        "is_first_colour_visit": False, "customer_age": 30, "requested_weekday": "tuesday",
+    })
+    client = FakeClient(script=[
+        FakeResponse(stop_reason="tool_use", content=[
+            FakeBlock(
+                type="tool_use", name="request_booking",
+                input={"service_id": "svc_colour_full", "slot_id": LATER_SLOT}, id="call_1",
+            ),
+            FakeBlock(
+                type="tool_use", name="request_booking",
+                input={"service_id": "svc_colour_full", "slot_id": FIRST_COLOUR_SLOT}, id="call_2",
+            ),
+        ]),
+        _final_text("You're booked in."),
+    ])
+    agent = Agent(client=client, tool_context=ctx)
+
+    agent.run_turn([{"role": "user", "content": "book me twice please"}])
+
+    assert len(calendar.bookings()) == 1
+
+
 def test_the_loop_stops_at_the_iteration_cap():
     """A model that never stops calling tools does not run forever."""
     calendar = _calendar()

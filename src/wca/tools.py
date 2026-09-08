@@ -53,6 +53,12 @@ class ToolContext:
     conversation: ConversationState
     now: datetime
     _counter: int = field(default=0, repr=False)
+    #: One `ToolContext` is built fresh per agent turn (see `wca.cli`), so
+    #: this flag is naturally turn-scoped. It stops a second successful
+    #: `request_booking` call in the same turn -- the agent loop dispatches
+    #: every tool_use block in a model response, and nothing else here
+    #: limits how many of them can be `request_booking`.
+    _booked_this_turn: bool = field(default=False, repr=False)
 
     def next_counter(self) -> int:
         self._counter += 1
@@ -75,17 +81,27 @@ def search_catalogue(ctx: ToolContext, query: str) -> list[dict[str, Any]]:
 
 def check_availability(
     ctx: ToolContext, service_id: str, from_date: str, to_date: str
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | dict[str, Any]:
     """Read-only. Free means `calendar.availability(now)` includes the slot.
 
     An unknown service returns no slots rather than guessing at what the
     customer meant. Dates are plain `YYYY-MM-DD` strings, inclusive.
+
+    A date the model could not format correctly (`"next monday"`, a
+    missing string) is a refusal with a reason the model can read and
+    correct itself on, not an exception -- the caller cannot rely on
+    `dispatch`'s own safety net alone, because that would return the same
+    generic message for every malformed call instead of one that names
+    which date was the problem.
     """
     if ctx.catalogue.get(service_id) is None:
         return []
 
-    start = date.fromisoformat(from_date)
-    end = date.fromisoformat(to_date)
+    try:
+        start = date.fromisoformat(from_date)
+        end = date.fromisoformat(to_date)
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "reason": f"could not understand the date range given: {exc}"}
 
     free_ids = ctx.calendar.availability(ctx.now)
     results: list[dict[str, Any]] = []
@@ -109,6 +125,12 @@ def request_booking(ctx: ToolContext, service_id: str, slot_id: str) -> dict[str
     an earlier turn put in the conversation's facts); propose; hold;
     evaluate; commit on PASS or release on BLOCK; audit either way.
     """
+    if ctx._booked_this_turn:
+        # No proposal was built and nothing was held, so there is nothing
+        # to audit -- same posture as the unknown-service refusal below,
+        # which also returns before touching the audit log.
+        return {"ok": False, "reason": "a booking has already been made in this conversation turn"}
+
     service = ctx.catalogue.get(service_id)
     if service is None:
         return {"ok": False, "reason": f"no such service: {service_id}"}
@@ -161,42 +183,50 @@ def request_booking(ctx: ToolContext, service_id: str, slot_id: str) -> dict[str
     # only exercises its booking checks when proposal.action.type ==
     # "book"; anything else evaluates those checks vacuously true. This
     # extra check is what keeps that from becoming a second way in.
-    if verdict.allowed and proposal.action.type == "book":
-        key = make_idempotency_key(
-            ctx.conversation.thread_id, "book", {"service_id": service_id, "slot_id": slot_id}
-        )
-        booking = ctx.calendar.commit(hold.hold_id, idempotency_key=key, now=ctx.now)
-        result: dict[str, Any] = {
-            "ok": True,
-            "booking_id": booking.booking_id,
-            "slot_id": booking.slot_id,
-        }
-    else:
-        ctx.calendar.release(hold.hold_id, reason=verdict.reason or proposal.action.type, now=ctx.now)
-        if not verdict.allowed:
-            # A real gate block: the reason the gate gave, verbatim.
-            reason = verdict.reason
-        elif proposal.action.type == "decline":
-            # propose() itself declined (a deny rule matched) before the
-            # gate ever saw a "book" proposal to check. Surface the
-            # matched rule's own reason rather than a bare action name.
-            denying = [r for r in cited_rules if r.outcome.type == "deny"]
-            reason = denying[0].outcome.reason if denying else "this cannot be booked"
-        elif proposal.action.type == "escalate":
-            reason = f"this needs a person to review: {proposal.action.escalation_reason}"
-        else:  # "ask": propose() found a fact it still needs
-            reason = proposal.action.question or "I need more information before I can book this"
-        result = {"ok": False, "reason": reason}
-
-    ctx.audit.append(AuditRecord(
-        proposal=proposal,
-        verdict=verdict,
-        ruleset_version=ctx.ruleset.ruleset_version,
-        rules_english=tuple(to_english(rule.condition) for rule in cited_rules),
-        calendar_read=calendar_view,
-        window_read=window_read,
-        decided_at=ctx.now,
-    ))
+    #
+    # The audit append is in `finally` rather than after this block: a
+    # verdict was already decided by the time we reach here, so a record
+    # of it must exist even if `commit()` itself goes on to raise (a hold
+    # gone stale, an idempotency race). Without this, a PASS that failed
+    # to actually commit would leave no trace of the decision at all.
+    try:
+        if verdict.allowed and proposal.action.type == "book":
+            key = make_idempotency_key(
+                ctx.conversation.thread_id, "book", {"service_id": service_id, "slot_id": slot_id}
+            )
+            booking = ctx.calendar.commit(hold.hold_id, idempotency_key=key, now=ctx.now)
+            ctx._booked_this_turn = True
+            result: dict[str, Any] = {
+                "ok": True,
+                "booking_id": booking.booking_id,
+                "slot_id": booking.slot_id,
+            }
+        else:
+            ctx.calendar.release(hold.hold_id, reason=verdict.reason or proposal.action.type, now=ctx.now)
+            if not verdict.allowed:
+                # A real gate block: the reason the gate gave, verbatim.
+                reason = verdict.reason
+            elif proposal.action.type == "decline":
+                # propose() itself declined (a deny rule matched) before the
+                # gate ever saw a "book" proposal to check. Surface the
+                # matched rule's own reason rather than a bare action name.
+                denying = [r for r in cited_rules if r.outcome.type == "deny"]
+                reason = denying[0].outcome.reason if denying else "this cannot be booked"
+            elif proposal.action.type == "escalate":
+                reason = f"this needs a person to review: {proposal.action.escalation_reason}"
+            else:  # "ask": propose() found a fact it still needs
+                reason = proposal.action.question or "I need more information before I can book this"
+            result = {"ok": False, "reason": reason}
+    finally:
+        ctx.audit.append(AuditRecord(
+            proposal=proposal,
+            verdict=verdict,
+            ruleset_version=ctx.ruleset.ruleset_version,
+            rules_english=tuple(to_english(rule.condition) for rule in cited_rules),
+            calendar_read=calendar_view,
+            window_read=window_read,
+            decided_at=ctx.now,
+        ))
     return result
 
 
@@ -241,6 +271,25 @@ def escalate(ctx: ToolContext, reason: str) -> dict[str, Any]:
     ))
     return result
 
+
+#: The fixed set of reasons the model may hand `escalate`. Free text was
+#: never checkable against `wca.cli`'s template registry -- the registry
+#: is keyed by exact string, so a model saying "customer is angry" when
+#: the registry only knows rule ids got "no template registered" every
+#: time. Constraining the schema to this enum, and registering a template
+#: for each one in `wca.cli.REGISTRY`, is what makes `escalate` usable in
+#: production. "general" is the catch-all for anything that doesn't fit
+#: the other reasons. Rule-triggered escalations (e.g.
+#: "under_16_needs_guardian", produced by `wca.propose.propose`) are a
+#: separate namespace -- they never go through this tool at all, they
+#: come back out of `request_booking` -- so they keep working unchanged.
+ESCALATION_REASONS: tuple[str, ...] = (
+    "customer_requested_human",
+    "customer_upset_or_angry",
+    "outside_agent_scope",
+    "technical_or_system_issue",
+    "general",
+)
 
 #: Tool definitions in the shape the Anthropic Messages API wants. Passed
 #: to `client.messages.create(tools=...)` verbatim.
@@ -289,12 +338,15 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "escalate",
         "description": (
-            "Raise the conversation to a human, with a short reason. Can be "
-            "refused if a human cannot be reached before the messaging window closes."
+            "Raise the conversation to a human, with a reason chosen from the "
+            "fixed list. Can be refused if a human cannot be reached before the "
+            "messaging window closes. Use 'general' if nothing else fits."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"reason": {"type": "string"}},
+            "properties": {
+                "reason": {"type": "string", "enum": list(ESCALATION_REASONS)},
+            },
             "required": ["reason"],
         },
     },
@@ -309,8 +361,29 @@ _HANDLERS = {
 
 
 def dispatch(ctx: ToolContext, name: str, arguments: dict[str, Any]) -> Any:
-    """Run one tool call by name. Used by the agent loop in `wca.agent`."""
+    """Run one tool call by name. Used by the agent loop in `wca.agent`.
+
+    A malformed call -- a date string the model made up
+    (`check_availability(from_date="next monday")`), a required argument
+    left out (`search_catalogue({})`), an argument name that does not
+    exist -- raises `ValueError` or `TypeError` from the handler itself,
+    from plain Python argument binding in the `**args` unpacking above.
+    Left alone, that exception propagates out through `run_turn`,
+    `run_job` and `drain_thread`, gets printed server-side by
+    `after_enqueue`, and the customer receives nothing: on WhatsApp,
+    silence is indistinguishable from a dead number. Catching exactly
+    these two argument-shaped errors and turning them into a normal
+    tool-result dict lets the model see what went wrong and correct
+    itself (or explain the problem to the customer) instead of the turn
+    dying silently. Nothing else is caught here -- a real programming
+    error (`AttributeError`, `KeyError`, ...) still propagates, because
+    swallowing it would hide the bug this function's own contract does
+    not cover.
+    """
     handler = _HANDLERS.get(name)
     if handler is None:
         return {"ok": False, "reason": f"no such tool: {name}"}
-    return handler(ctx, arguments)
+    try:
+        return handler(ctx, arguments)
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "reason": f"could not run {name} with those arguments: {exc}"}

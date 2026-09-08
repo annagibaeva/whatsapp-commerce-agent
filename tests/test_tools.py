@@ -1,7 +1,9 @@
 from datetime import timedelta
 
+import pytest
+
 from wca.audit import AuditLog
-from wca.calendar.mock import MockCalendar, Slot
+from wca.calendar.mock import HoldRefused, MockCalendar, RefusalReason, Slot
 from wca.catalogue import load_catalogue
 from wca.clock import utc
 from wca.conversation.state import ConversationState
@@ -11,6 +13,7 @@ from wca.rules.store import load_ruleset
 from wca.tools import (
     ToolContext,
     check_availability,
+    dispatch,
     escalate,
     request_booking,
     search_catalogue,
@@ -248,3 +251,150 @@ def test_escalate_is_blocked_when_no_template_is_registered():
 
     assert result["ok"] is False
     assert "template" in result["reason"]
+
+
+# --- I4: catalogue facts must win over conflicting conversation facts -------
+
+def test_catalogue_facts_win_over_conflicting_conversation_facts():
+    """request_booking merges conversation facts, then catalogue facts, so
+    the catalogue wins on service_category and quoted_price_minor -- those
+    two must come from the catalogue, not from anything the model (or an
+    earlier turn) put in conversation.facts.
+
+    Proven here by deliberately lying in the conversation facts
+    (service_category="cut", a one-cent price) for a real colour booking.
+    If the catalogue's values did not win, no rule in policy/salon.rules.json
+    would match "cut" and the booking would be blocked with "no cited rule
+    allows a booking" instead of succeeding.
+    """
+    calendar = _calendar()
+    conflicting_facts = dict(
+        ADULT_RETURNING_FACTS,
+        service_category="cut",
+        quoted_price_minor=1,
+    )
+    ctx = _ctx(calendar, facts=conflicting_facts)
+
+    result = request_booking(ctx, service_id="svc_colour_full", slot_id=LATER_SLOT)
+
+    assert result["ok"] is True
+    record = ctx.audit.records()[0]
+    assert record.proposal.facts["service_category"] == "colour"
+    assert record.proposal.facts["quoted_price_minor"] == 18000
+
+
+# --- I6: at most one successful booking per turn -----------------------------
+
+def test_a_second_request_booking_on_the_same_context_is_refused():
+    """One ToolContext is built fresh per agent turn (see wca.cli.run_job),
+    so this proves at most one booking can succeed per turn even though
+    the agent loop dispatches every tool_use block in a response."""
+    calendar = _calendar()
+    ctx = _ctx(calendar, facts=ADULT_RETURNING_FACTS)
+
+    first = request_booking(ctx, service_id="svc_colour_full", slot_id=LATER_SLOT)
+    second = request_booking(ctx, service_id="svc_colour_roots", slot_id=FIRST_COLOUR_SLOT)
+
+    assert first["ok"] is True
+    assert second["ok"] is False
+    assert "already been made" in second["reason"]
+    assert len(calendar.bookings()) == 1
+
+
+# --- an AuditRecord exists even if commit() itself raises --------------------
+
+def test_a_raise_from_commit_still_leaves_an_audit_record():
+    """A verdict was already decided (PASS) by the time commit() runs. If
+    commit() then raises -- a stale hold, an idempotency race -- the
+    decision must still be on the audit trail, not silently lost."""
+    calendar = _calendar()
+    ctx = _ctx(calendar, facts=ADULT_RETURNING_FACTS)
+
+    def _boom(*args, **kwargs):
+        raise HoldRefused(RefusalReason.HOLD_EXPIRED, "boom")
+
+    calendar.commit = _boom  # type: ignore[method-assign]
+
+    with pytest.raises(HoldRefused):
+        request_booking(ctx, service_id="svc_colour_full", slot_id=LATER_SLOT)
+
+    assert len(ctx.audit) == 1
+    assert ctx.audit.records()[0].verdict.allowed is True
+    assert calendar.bookings() == ()
+
+
+# --- C2: a malformed tool call is a refusal, not an exception ----------------
+
+def test_check_availability_with_an_unparseable_date_is_a_refusal_not_a_crash():
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+
+    result = check_availability(
+        ctx, service_id="svc_colour_full", from_date="next monday", to_date="2026-09-01"
+    )
+
+    assert result["ok"] is False
+    assert "date" in result["reason"].lower()
+
+
+def test_dispatch_refuses_rather_than_raises_on_a_bad_date_string():
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+
+    result = dispatch(ctx, "check_availability", {
+        "service_id": "svc_colour_full", "from_date": "next monday", "to_date": "2026-09-01",
+    })
+
+    assert result["ok"] is False
+
+
+def test_dispatch_refuses_rather_than_raises_on_a_missing_required_argument():
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+
+    result = dispatch(ctx, "search_catalogue", {})
+
+    assert result["ok"] is False
+    assert "search_catalogue" in result["reason"]
+
+
+def test_dispatch_refuses_rather_than_raises_on_an_unexpected_keyword():
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+
+    result = dispatch(ctx, "request_booking", {
+        "service_id": "svc_colour_full", "slot_id": LATER_SLOT, "not_a_real_argument": "x",
+    })
+
+    assert result["ok"] is False
+    assert calendar.bookings() == ()
+
+
+def test_dispatch_still_lets_a_real_programming_error_surface():
+    """Only TypeError and ValueError are caught. Anything else (a bug, not
+    a malformed argument) must still propagate -- swallowing it would hide
+    the bug the rest of C2 is not meant to cover."""
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+
+    def _boom(ctx, args):
+        raise KeyError("not an argument-shaped error")
+
+    from wca import tools as tools_module
+    original = tools_module._HANDLERS["search_catalogue"]
+    tools_module._HANDLERS["search_catalogue"] = _boom
+    try:
+        with pytest.raises(KeyError):
+            dispatch(ctx, "search_catalogue", {"query": "colour"})
+    finally:
+        tools_module._HANDLERS["search_catalogue"] = original
+
+
+# --- I5: escalate's enum and the real registry cannot drift apart -----------
+
+def test_escalate_tool_spec_carries_a_fixed_enum_of_reasons():
+    from wca.tools import ESCALATION_REASONS, TOOL_SPECS
+
+    escalate_spec = next(spec for spec in TOOL_SPECS if spec["name"] == "escalate")
+    assert escalate_spec["input_schema"]["properties"]["reason"]["enum"] == list(ESCALATION_REASONS)
+    assert "general" in ESCALATION_REASONS
