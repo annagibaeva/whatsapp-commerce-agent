@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from wca.escalation import Template, TemplateRegistry
 from wca.harness import run_cases
 from wca.rules.render import to_english
 from wca.rules.store import load_ruleset
+from wca.tools import ESCALATION_REASONS
 
 DEFAULT_RULES = Path("policy/salon.rules.json")
 DEFAULT_CATALOGUE = Path("policy/salon.catalogue.json")
@@ -30,9 +32,41 @@ DEFAULT_CASES = Path("cases/v0.cases.json")
 DEMO_CALENDAR_START = utc(2026, 9, 8, 9)
 
 REGISTRY = TemplateRegistry(templates=(
+    # Rule-id escalations: `wca.propose.propose` sets `escalation_reason`
+    # to a matched rule's own id (e.g. a `require_escalation` outcome),
+    # so these two are named after the rules, not after ESCALATION_REASONS.
     Template(reason="under_16_needs_guardian", name="guardian_notice", approved=True),
     Template(reason="patch_test_first_colour", name="patch_test_notice", approved=True),
+    # One approved template for every reason the `escalate` tool's schema
+    # allows the model to send (see `wca.tools.ESCALATION_REASONS`). This
+    # is what keeps the tool's enum and this registry from drifting apart
+    # again -- see tests/test_cli.py's test against this exact registry.
+    *(
+        Template(reason=reason, name=f"{reason}_notice", approved=True)
+        for reason in ESCALATION_REASONS
+    ),
 ))
+
+#: A short, generic reply sent instead of leaving the customer with
+#: silence -- when the agent's own reply comes back empty (iteration cap
+#: hit with no final text), when the turn raises unexpectedly, or when a
+#: thread has gone over its message budget (see MAX_MESSAGES_PER_WINDOW
+#: below). On WhatsApp, silence is indistinguishable from a dead number.
+FALLBACK_REPLY = "Sorry, I'm having trouble with that request. A member of our team will follow up with you shortly."
+
+#: A rolling per-thread budget. The webhook is public and holds a real
+#: API key; without a bound, a thread with no natural end could call the
+#: model without limit. v0 keeps this simple and in-memory: a plain count
+#: of messages handled per thread_id within a trailing window. Over
+#: budget, the thread gets FALLBACK_REPLY once per message and the model
+#: is never called for it.
+MAX_MESSAGES_PER_WINDOW = 20
+MESSAGE_BUDGET_WINDOW_SECONDS = 3600.0
+
+#: How many past turns (customer message + agent reply, each counted
+#: separately) are replayed to the model on the next turn. Unbounded
+#: history would grow every request's token cost forever; this caps it.
+MAX_HISTORY_MESSAGES = 20
 
 
 def _demo_slots(
@@ -117,6 +151,7 @@ def build_serve_app(
     catalogue: Any,
     calendar: Any,
     client: Any,
+    extractor: Any,
     transport: Any,
     registry: TemplateRegistry = REGISTRY,
     audit: Any = None,
@@ -132,10 +167,14 @@ def build_serve_app(
 
     Every collaborator comes in as a parameter rather than being built
     here, so `cmd_serve` supplies the live ones (a real Anthropic
-    client, `WhatsAppTransport`, a calendar seeded with demo slots) and
-    a test can supply fakes (a stubbed client, `FakeTransport`, an
-    in-memory calendar) and drive the exact same wiring with no network
-    and no real model call.
+    client, an `AnthropicExtractor`, `WhatsAppTransport`, a calendar
+    seeded with demo slots) and a test can supply fakes (a stubbed
+    client, a `FakeExtractor`, `FakeTransport`, an in-memory calendar)
+    and drive the exact same wiring with no network and no real model
+    call. `extractor` has no default, same as `client` and `transport`:
+    every caller must say explicitly what turns a message into facts,
+    rather than the pipeline silently running with none (see `run_job`
+    below -- that silence was the bug this parameter exists to close).
 
     The request path stays fast: `on_message` only appends a job to
     `queue`, which is a dict lookup and a deque append. Everything that
@@ -179,6 +218,21 @@ def build_serve_app(
     reap_interval = reap_interval_seconds or DEFAULT_REAP_INTERVAL_SECONDS
     watchdog_interval = watchdog_interval_seconds or DEFAULT_WATCHDOG_INTERVAL_SECONDS
 
+    # Per-thread message history (for the model) and send timestamps (for
+    # the budget below). Both are plain in-memory dicts, same posture as
+    # DedupStore and ConversationStore: v0, never evicted, good enough for
+    # a demo deployment. Kept here rather than on ConversationState so
+    # this task's fix stays inside wca.cli.
+    histories: dict[str, list[dict[str, str]]] = defaultdict(list)
+    send_times: dict[str, list[datetime]] = defaultdict(list)
+
+    def _over_budget(thread_id: str, now: datetime) -> bool:
+        window_start = now - timedelta(seconds=MESSAGE_BUDGET_WINDOW_SECONDS)
+        recent = [t for t in send_times[thread_id] if t > window_start]
+        recent.append(now)
+        send_times[thread_id] = recent
+        return len(recent) > MAX_MESSAGES_PER_WINDOW
+
     def run_job(message: Any) -> None:
         # 1. Dedup, inside the job -- see the docstring above for why.
         if dedup.seen(message.message_id):
@@ -188,36 +242,84 @@ def build_serve_app(
         # 2. Get or create the conversation, move last_inbound_at.
         now = datetime.now(timezone.utc)
         state = conversations.get_or_create(message.thread_id, now=now)
-        state.add_facts({}, now=now)
 
-        # 3. One Agent turn with the message text and the tool context.
-        ctx = ToolContext(
-            ruleset=ruleset, catalogue=catalogue, calendar=calendar,
-            registry=registry, audit=audit, conversation=state, now=now,
-        )
-        agent = Agent(client=client, tool_context=ctx)
-        before = len(audit)
-        reply = agent.run_turn([{"role": "user", "content": message.text}])
+        # 3. Per-sender budget. The webhook is public and holds a real
+        # key; nothing upstream of this caps how many messages one
+        # thread can send, and DedupStore/ConversationStore/the queue's
+        # dicts never evict. Over budget, the model is never called.
+        if _over_budget(message.thread_id, now):
+            print(
+                f"[serve] thread {message.thread_id} is over its budget of "
+                f"{MAX_MESSAGES_PER_WINDOW} messages per "
+                f"{MESSAGE_BUDGET_WINDOW_SECONDS:.0f}s; not calling the model"
+            )
+            transport.send_text(message.thread_id, FALLBACK_REPLY)
+            return
 
-        # Anything this turn escalated is now something the watchdog
-        # needs to know about. Read it off the audit trail rather than
-        # threading a callback into wca.tools.escalate, which this task
-        # does not touch.
-        for record in audit.records()[before:]:
-            if record.verdict.allowed and record.proposal.action.type == "escalate":
-                escalations.add(EscalationTicket(
-                    thread_id=record.proposal.thread_id,
-                    reason=record.proposal.action.escalation_reason or "",
-                    raised_at=record.decided_at,
-                    window_closes_at=datetime.fromisoformat(
-                        record.window_read["window_closes_at"]
-                    ),
-                    template_name=record.window_read.get("template_name") or "",
-                ))
+        thread_history = histories[message.thread_id]
 
-        # 4. Send the reply.
-        if reply:
+        # Wrapped so that any unexpected failure in the job still leaves
+        # the customer with a reply -- silence on WhatsApp is
+        # indistinguishable from a dead number -- while the error itself
+        # is re-raised afterwards, so it still surfaces in `after_enqueue`'s
+        # logging and in `queue.drain_thread`'s error list.
+        try:
+            # 4. Extract facts from the message and merge them into the
+            # conversation before running the agent. Without this step,
+            # `conversation.facts` never gains anything the customer
+            # actually said, and every rule that depends on a fact only
+            # the model could have read from the message text (e.g.
+            # is_first_colour_visit) blocks forever with "we never
+            # established" -- the agent could not book anything.
+            extraction = extractor.extract(
+                message.message_id,
+                message.text,
+                [turn["content"] for turn in thread_history],
+            )
+            state.add_facts(extraction.facts, now=now)
+
+            # 5. One Agent turn with the tool context and the thread's
+            # recent turns, not just the current message -- otherwise no
+            # conversation history ever reaches the model.
+            ctx = ToolContext(
+                ruleset=ruleset, catalogue=catalogue, calendar=calendar,
+                registry=registry, audit=audit, conversation=state, now=now,
+            )
+            agent = Agent(client=client, tool_context=ctx)
+            turn_messages = [*thread_history, {"role": "user", "content": message.text}]
+            before = len(audit)
+            reply = agent.run_turn(turn_messages)
+
+            # Anything this turn escalated is now something the watchdog
+            # needs to know about. Read it off the audit trail rather than
+            # threading a callback into wca.tools.escalate, which this task
+            # does not touch.
+            for record in audit.records()[before:]:
+                if record.verdict.allowed and record.proposal.action.type == "escalate":
+                    escalations.add(EscalationTicket(
+                        thread_id=record.proposal.thread_id,
+                        reason=record.proposal.action.escalation_reason or "",
+                        raised_at=record.decided_at,
+                        window_closes_at=datetime.fromisoformat(
+                            record.window_read["window_closes_at"]
+                        ),
+                        template_name=record.window_read.get("template_name") or "",
+                    ))
+
+            # 6. Never leave the customer with silence. Hitting the
+            # iteration cap with no final text is an availability trade,
+            # not a safety one (see wca.agent's MAX_ITERATIONS docstring)
+            # -- but the customer still needs an answer.
+            reply = reply or FALLBACK_REPLY
+
+            thread_history.append({"role": "user", "content": message.text})
+            thread_history.append({"role": "assistant", "content": reply})
+            del thread_history[:-MAX_HISTORY_MESSAGES]
+
             transport.send_text(message.thread_id, reply)
+        except Exception:
+            transport.send_text(message.thread_id, FALLBACK_REPLY)
+            raise
 
     def on_message(message: Any) -> None:
         # Fast: append to the deque and return. Nothing here can block
@@ -262,6 +364,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
     from anthropic import Anthropic
 
+    from wca.extract.anthropic import AnthropicExtractor
     from wca.transport.webhook import WebhookSettings
     from wca.transport.whatsapp import WhatsAppTransport
 
@@ -276,6 +379,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if not phone_number_id or not access_token:
         print("WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_ACCESS_TOKEN must be set in .env")
         return 1
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        # Fail loudly here rather than let AnthropicExtractor() raise a
+        # moment later -- and, far worse, rather than silently running
+        # without an extractor at all. A factless agent still starts up
+        # cleanly and looks fine right up until every rule that depends
+        # on something the customer said blocks with "we never
+        # established" -- that silent failure mode is exactly what this
+        # check exists to rule out.
+        print("ANTHROPIC_API_KEY must be set in .env -- the agent cannot extract facts without it")
+        return 1
 
     # Length only — never the secret itself. Confirms which .env won.
     print(f"[serve] loaded {env_path} (app_secret_len={len(secret)})")
@@ -286,6 +399,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         catalogue=load_catalogue(str(args.catalogue)),
         calendar=_demo_calendar(),
         client=Anthropic(),
+        extractor=AnthropicExtractor(),
         transport=WhatsAppTransport(phone_number_id, access_token),
     )
     uvicorn.run(app, host="0.0.0.0", port=args.port)
