@@ -64,6 +64,117 @@ def test_parse_inbound_ignores_a_non_text_message():
     assert parse_inbound(image) == []
 
 
+def _with_message(message: dict) -> dict:
+    body = json.loads(json.dumps(PAYLOAD))
+    body["entry"][0]["changes"][0]["value"]["messages"][0] = message
+    return body
+
+
+def test_parse_inbound_reads_a_template_quick_reply_button():
+    button = {
+        "from": "447700900123", "id": "wamid.BTN", "timestamp": "1755772800",
+        "type": "button", "button": {"text": "Confirm", "payload": "confirm_bkg_123"},
+    }
+    messages = parse_inbound(_with_message(button))
+    assert len(messages) == 1
+    assert messages[0].text == "Confirm"
+    assert messages[0].message_id == "wamid.BTN"
+    assert messages[0].thread_id == "447700900123"
+
+
+def test_parse_inbound_reads_an_interactive_button_reply():
+    button_reply = {
+        "from": "447700900123", "id": "wamid.IBTN", "timestamp": "1755772800",
+        "type": "interactive", "interactive": {
+            "type": "button_reply",
+            "button_reply": {"id": "confirm", "title": "Confirm"},
+        },
+    }
+    messages = parse_inbound(_with_message(button_reply))
+    assert len(messages) == 1
+    assert messages[0].text == "Confirm"
+
+
+def test_parse_inbound_reads_an_interactive_list_reply():
+    list_reply = {
+        "from": "447700900123", "id": "wamid.LST", "timestamp": "1755772800",
+        "type": "interactive", "interactive": {
+            "type": "list_reply",
+            "list_reply": {
+                "id": "slot_a", "title": "Tuesday 2:00pm", "description": "",
+            },
+        },
+    }
+    messages = parse_inbound(_with_message(list_reply))
+    assert len(messages) == 1
+    assert messages[0].text == "Tuesday 2:00pm"
+
+
+def test_parse_inbound_still_reads_plain_text():
+    messages = parse_inbound(PAYLOAD)
+    assert len(messages) == 1
+    assert messages[0].text == "colour on tuesday please"
+
+
+@pytest.mark.parametrize("message", [
+    {"from": "447700900123", "id": "wamid.B1", "timestamp": "1755772800", "type": "button"},
+    {
+        "from": "447700900123", "id": "wamid.B2", "timestamp": "1755772800",
+        "type": "button", "button": {},
+    },
+    {"from": "447700900123", "id": "wamid.I1", "timestamp": "1755772800", "type": "interactive"},
+    {
+        "from": "447700900123", "id": "wamid.I2", "timestamp": "1755772800",
+        "type": "interactive", "interactive": {},
+    },
+    {
+        "from": "447700900123", "id": "wamid.I3", "timestamp": "1755772800",
+        "type": "interactive", "interactive": {"type": "button_reply"},
+    },
+    {
+        "from": "447700900123", "id": "wamid.I4", "timestamp": "1755772800",
+        "type": "interactive",
+        "interactive": {"type": "button_reply", "button_reply": {}},
+    },
+    {
+        "from": "447700900123", "id": "wamid.I5", "timestamp": "1755772800",
+        "type": "interactive", "interactive": {"type": "list_reply"},
+    },
+    {
+        "from": "447700900123", "id": "wamid.I6", "timestamp": "1755772800",
+        "type": "interactive",
+        "interactive": {"type": "list_reply", "list_reply": {}},
+    },
+])
+def test_parse_inbound_skips_a_button_or_interactive_shape_missing_its_inner_object(message):
+    assert parse_inbound(_with_message(message)) == []
+
+
+def test_parse_inbound_on_a_mixed_batch_yields_only_the_real_messages_in_order():
+    status = {"id": "wamid.STATUS", "status": "delivered"}
+    text = {
+        "from": "447700900123", "id": "wamid.TXT", "timestamp": "1755772800",
+        "text": {"body": "hi"}, "type": "text",
+    }
+    button_reply = {
+        "from": "447700900123", "id": "wamid.BR", "timestamp": "1755772900",
+        "type": "interactive", "interactive": {
+            "type": "button_reply",
+            "button_reply": {"id": "confirm", "title": "Confirm"},
+        },
+    }
+    mixed = {"object": "whatsapp_business_account", "entry": [{"id": "WABA", "changes": [{
+        "field": "messages", "value": {
+            "messaging_product": "whatsapp",
+            "statuses": [status],
+            "messages": [text, button_reply],
+        },
+    }]}]}
+    messages = parse_inbound(mixed)
+    assert [m.message_id for m in messages] == ["wamid.TXT", "wamid.BR"]
+    assert [m.text for m in messages] == ["hi", "Confirm"]
+
+
 def test_send_text_posts_the_right_shape():
     http = StubHTTP()
     t = WhatsAppTransport(phone_number_id="PNID", access_token="TOKEN", http=http)
