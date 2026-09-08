@@ -175,6 +175,55 @@ def test_check_availability_on_an_unknown_service_returns_nothing():
     assert results == []
 
 
+def test_check_availability_carries_a_human_readable_label():
+    """The model should quote this back rather than computing a weekday
+    or a 12-hour time itself -- that's a thing models get wrong."""
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+
+    results = check_availability(
+        ctx, service_id="svc_colour_full", from_date="2026-08-21", to_date="2026-08-25"
+    )
+
+    match = next(r for r in results if r["slot_id"] == FIRST_COLOUR_SLOT)
+    # FIRST_COLOUR_STARTS_AT is NOW (Friday 21 Aug, 10:00) + 10 hours = 20:00.
+    assert match["label"] == "Friday 21 August, 8:00pm"
+
+
+def test_check_availability_with_no_dates_defaults_to_a_window_from_now():
+    """Fix 4: the model can ask "what's free" without doing date
+    arithmetic on a `now` it is never told. Neither date given -> a
+    sensible window from ctx.now, not an error."""
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+
+    results = check_availability(ctx, service_id="svc_colour_full")
+
+    ids = {r["slot_id"] for r in results}
+    # Both real slots fall within 14 days of NOW.
+    assert ids == {FIRST_COLOUR_SLOT, LATER_SLOT, SUNDAY_SLOT}
+
+
+def test_check_availability_with_only_from_date_defaults_the_end():
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+
+    results = check_availability(ctx, service_id="svc_colour_full", from_date="2026-08-21")
+
+    ids = {r["slot_id"] for r in results}
+    assert ids == {FIRST_COLOUR_SLOT, LATER_SLOT, SUNDAY_SLOT}
+
+
+def test_check_availability_with_only_to_date_defaults_the_start():
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+
+    results = check_availability(ctx, service_id="svc_colour_full", to_date="2026-08-22")
+
+    ids = {r["slot_id"] for r in results}
+    assert ids == {FIRST_COLOUR_SLOT}
+
+
 # --- a legitimate booking, and idempotency ----------------------------------
 
 def test_a_legitimate_booking_succeeds_exactly_once():

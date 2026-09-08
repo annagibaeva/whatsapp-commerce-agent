@@ -17,7 +17,7 @@ independent conversations running at once just builds two contexts.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from wca.audit import AuditLog
@@ -72,10 +72,30 @@ WEEKDAY_NAMES: tuple[str, ...] = (
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
 )
 
+#: How far ahead `check_availability` looks when the model asks "what's
+#: free" without giving a date range. Long enough to be useful, short
+#: enough that the result stays a short list, not the whole calendar.
+DEFAULT_AVAILABILITY_WINDOW_DAYS = 14
+
 
 def _weekday_of(starts_at: datetime) -> str:
     """The weekday name a rule can compare against, from a real slot time."""
     return WEEKDAY_NAMES[starts_at.weekday()]
+
+
+def _human_slot_label(starts_at: datetime) -> str:
+    """"Tuesday 25 August, 2:00pm" -- for the model to quote back verbatim.
+
+    Weekday names and 12-hour clock arithmetic are exactly the kind of
+    thing a model gets wrong when asked to compute them from an ISO
+    timestamp. Precomputing the label here means it never has to.
+    """
+    hour12 = starts_at.hour % 12 or 12
+    period = "am" if starts_at.hour < 12 else "pm"
+    return (
+        f"{starts_at.strftime('%A')} {starts_at.day} {starts_at.strftime('%B')}, "
+        f"{hour12}:{starts_at.minute:02d}{period}"
+    )
 
 
 def search_catalogue(ctx: ToolContext, query: str) -> list[dict[str, Any]]:
@@ -93,15 +113,22 @@ def search_catalogue(ctx: ToolContext, query: str) -> list[dict[str, Any]]:
 
 
 def check_availability(
-    ctx: ToolContext, service_id: str, from_date: str, to_date: str
+    ctx: ToolContext, service_id: str, from_date: str | None = None, to_date: str | None = None
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """Read-only. Free means `calendar.availability(now)` includes the slot.
 
     An unknown service returns no slots rather than guessing at what the
     customer meant. Dates are plain `YYYY-MM-DD` strings, inclusive.
 
+    Both dates are optional. The model was asking "what's free" and
+    getting stuck doing date arithmetic on `ctx.now` -- a value it is
+    never told -- just to fill in a range it does not actually care
+    about. Leaving either one out fills it in from `ctx.now`:
+    `from_date` defaults to today, `to_date` to
+    `DEFAULT_AVAILABILITY_WINDOW_DAYS` after whichever start is in play.
+
     A date the model could not format correctly (`"next monday"`, a
-    missing string) is a refusal with a reason the model can read and
+    malformed string) is a refusal with a reason the model can read and
     correct itself on, not an exception -- the caller cannot rely on
     `dispatch`'s own safety net alone, because that would return the same
     generic message for every malformed call instead of one that names
@@ -111,8 +138,12 @@ def check_availability(
         return []
 
     try:
-        start = date.fromisoformat(from_date)
-        end = date.fromisoformat(to_date)
+        start = date.fromisoformat(from_date) if from_date else ctx.now.date()
+        end = (
+            date.fromisoformat(to_date)
+            if to_date
+            else start + timedelta(days=DEFAULT_AVAILABILITY_WINDOW_DAYS)
+        )
     except (TypeError, ValueError) as exc:
         return {"ok": False, "reason": f"could not understand the date range given: {exc}"}
 
@@ -123,7 +154,11 @@ def check_availability(
         if slot is None or slot.starts_at is None:
             continue
         if start <= slot.starts_at.date() <= end:
-            results.append({"slot_id": slot.slot_id, "starts_at": slot.starts_at.isoformat()})
+            results.append({
+                "slot_id": slot.slot_id,
+                "starts_at": slot.starts_at.isoformat(),
+                "label": _human_slot_label(slot.starts_at),
+            })
 
     results.sort(key=lambda r: r["starts_at"])
     return results
@@ -364,16 +399,21 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
         "name": "check_availability",
         "description": (
             "List free appointment slots for a service between two dates "
-            "(YYYY-MM-DD, inclusive). Read-only."
+            "(YYYY-MM-DD, inclusive). Read-only. Both dates are optional -- "
+            "omit either or both to see what's free over the next "
+            f"{DEFAULT_AVAILABILITY_WINDOW_DAYS} days from now. Each slot in "
+            "the result carries a human-readable 'label' (e.g. 'Tuesday 25 "
+            "August, 2:00pm') -- quote that back to the customer rather than "
+            "computing a weekday or a 12-hour time yourself."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "service_id": {"type": "string"},
-                "from_date": {"type": "string", "description": "YYYY-MM-DD"},
-                "to_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "from_date": {"type": "string", "description": "YYYY-MM-DD, optional"},
+                "to_date": {"type": "string", "description": "YYYY-MM-DD, optional"},
             },
-            "required": ["service_id", "from_date", "to_date"],
+            "required": ["service_id"],
         },
     },
     {
