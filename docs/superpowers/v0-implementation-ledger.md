@@ -142,3 +142,21 @@ Step 3 complete (7b7b1a0, merged). Catalogue loads, search refuses rather than g
 Step 2 complete (8502040, merged with a hand-resolved conflict in mock.py). Both races demonstrated before and after: two threads racing hold() gave 2 bookings on 1 slot, now gives 1; two drains of one thread interleaved j1-enter/j2-enter/j2-exit/j1-exit, now j1-enter/j1-exit/j2-enter/j2-exit.
 Step 2 note: commit()'s new ALREADY_BOOKED recheck is unreachable through the public API now that hold() locks. Kept as defence in depth.
 191 passed after the merge.
+
+=== REVIEW OF STEPS 4-6 (opus) ===
+Verdict: the safety invariant HOLDS. No constructible path commits a slot without a gate PASS on a book proposal. Reviewer tried unknown service, HoldRefused, non-book action, PASS on non-book, duplicate idempotency key, two tools in one turn. Request path measured: 200 sent at +0.001s against a 2.0s model call. All three addendum-mandated tests proven non-vacuous by mutation.
+What is broken is the other direction: the wiring cannot book ANYTHING, and fails silently.
+
+C1: cli.py:191 is state.add_facts({}, now=now). No extractor is wired into run_job, so conversation.facts is permanently empty. Every customer, every message: "patch_test_first_colour@1 might apply but we never established is_first_colour_visit". Safe, zero function.
+C2: dispatch() handles an unknown tool NAME but not bad ARGS. check_availability(from_date="next monday") raises ValueError, propagates through run_turn -> run_job -> drain_thread, gets printed server-side, and the customer gets NO REPLY. Haiku will hit this readily.
+I3: THE SEVENTH VACUOUS TEST. tools.py:116-117 merges conversation facts then catalogue facts so the catalogue wins. Reversing the order so the MODEL wins leaves all 226 tests passing. The addendum's whole point is untested.
+I4: escalate() is closed in production. window_view does an exact-string registry.find(reason); cli.py registers only rule ids; the model supplies free text and is never told those strings. Tests use a fabricated registry so none sees it.
+I5: two request_booking calls in one turn produce two bookings. Not a gate bypass, still wrong.
+I6: MAX_ITERATIONS=8 is enforced, but there is no per-sender or global bound on messages, and DedupStore/ConversationStore/ThreadQueue/EscalationBook never evict. A leaked app secret is unmetered spend.
+Minors: run_turn gets only the current message, no history; hitting the cap yields reply=="" and sends nothing; no AuditRecord if commit raises; an exception in evaluate orphans a hold until TTL.
+
+CORRECTION TO MY OWN REPORTING: I told Anna the pipeline was "genuinely wired" and listed call sites as evidence. I grepped six symbols and omitted `.extract(` — the exact symbol I had previously reported as having ZERO call sites. The one already known missing is the one I did not re-check. Second incomplete verification of the same kind in this project.
+
+=== n8n REQUIREMENTS (from Anna) ===
+n8n runs in the cloud. Trigger: 24 hours before an appointment, to confirm. Endpoint needs building.
+Consequences: the endpoint is PUBLIC (same host as the webhook) so it needs a shared secret, not open access. And a message 24h ahead falls OUTSIDE the WhatsApp service window, so it must be an approved template. Only hello_world is approved today. That approval gates the hop regardless of code and has real lead time.
