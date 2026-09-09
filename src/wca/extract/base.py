@@ -47,6 +47,14 @@ class ExtractionResult(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     parse_failed: bool = False
+    #: How many model calls this extraction took, 1 unless it escalated.
+    #: Without this, "extracted first time" and "extracted only after
+    #: escalating" collapse into one number and the cost argument for
+    #: tiering cannot be made.
+    attempts: int = 1
+    #: US dollars, computed from PRICES in wca.extract.anthropic. Summed
+    #: across every attempt this extraction actually made.
+    cost_usd: float = 0.0
 
 
 class Extractor(Protocol):

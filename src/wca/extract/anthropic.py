@@ -38,6 +38,16 @@ PRICES = {
     LARGE_MODEL: {"input": 5.00, "output": 25.00},
 }
 
+#: One retry, never a loop: SMALL_MODEL, then LARGE_MODEL if that failed.
+MAX_ATTEMPTS = 2
+
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Dollars for one call, from PRICES -- US dollars per *million*
+    tokens, hence the divisor below."""
+    prices = PRICES[model]
+    return (input_tokens * prices["input"] + output_tokens * prices["output"]) / 1_000_000
+
 
 def _render_turn(turn: Mapping[str, str]) -> str:
     """One line of `{thread}`, attributed -- `  customer: ...` or `  agent:
@@ -71,32 +81,49 @@ class AnthropicExtractor:
             thread="\n".join(_render_turn(turn) for turn in thread[-6:]) or "  (nothing yet)",
             message=text,
         )
-        started = time.perf_counter()
-        response = self._client.messages.parse(
-            model=self.model,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-            output_format=RawFactSet,
-        )
-        parsed = getattr(response, "parsed_output", None)
-        if parsed is None:
-            return ExtractionResult(
-                message_id=message_id, model=self.model, parse_failed=True,
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
+        model = self.model
+        total_cost = 0.0
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            started = time.perf_counter()
+            response = self._client.messages.parse(
+                model=model,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+                output_format=RawFactSet,
             )
-        try:
-            facts = build_facts(parsed)
-        except ValidationError:
+            usage = response.usage
+            total_cost += estimate_cost(model, usage.input_tokens, usage.output_tokens)
+
+            facts: dict | None = None
+            parsed = getattr(response, "parsed_output", None)
+            if parsed is not None:
+                try:
+                    facts = build_facts(parsed)
+                except ValidationError:
+                    facts = None
+
+            if facts is not None:
+                return ExtractionResult(
+                    message_id=message_id,
+                    facts=facts,
+                    model=model,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    attempts=attempt,
+                    cost_usd=total_cost,
+                )
+
+            # This attempt did not produce a usable extraction. Escalate to
+            # LARGE_MODEL for the one retry MAX_ATTEMPTS allows; on the
+            # final attempt, fall through and report the same failed shape
+            # callers have always gotten.
+            if attempt < MAX_ATTEMPTS:
+                model = LARGE_MODEL
+                continue
             return ExtractionResult(
-                message_id=message_id, model=self.model, parse_failed=True,
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
+                message_id=message_id, model=model, parse_failed=True,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                attempts=attempt,
+                cost_usd=total_cost,
             )
-        return ExtractionResult(
-            message_id=message_id,
-            facts=facts,
-            model=self.model,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-        )
