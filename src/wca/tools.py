@@ -341,7 +341,7 @@ def escalate(ctx: ToolContext, reason: str) -> dict[str, Any]:
     vacuous.
     """
     proposal = Proposal(
-        proposal_id=make_proposal_id(ctx.next_counter()),
+        proposal_id=make_proposal_id(ctx.conversation.thread_id, ctx.now, ctx.next_counter()),
         thread_id=ctx.conversation.thread_id,
         action=Action(type="escalate", escalation_reason=reason),
         cited_rules=(),

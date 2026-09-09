@@ -51,7 +51,7 @@ def propose(
                 action = Action(type="book", slot_id=slot_id)
 
     return Proposal(
-        proposal_id=proposal_id(counter),
+        proposal_id=proposal_id(thread_id, now, counter),
         thread_id=thread_id,
         action=action,
         cited_rules=cited,
