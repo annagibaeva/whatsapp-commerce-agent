@@ -29,7 +29,10 @@ jobs:
         run: uv python install 3.12
 
       - name: Install
-        run: uv sync --frozen
+        # --extra dev, because pytest lives in [project.optional-dependencies]
+        # and a plain `uv sync` leaves it out -- which fails as
+        # "Failed to spawn: pytest", not as a missing-dependency error.
+        run: uv sync --frozen --extra dev
 
       - name: Tests
         run: uv run pytest -q
