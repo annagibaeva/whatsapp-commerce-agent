@@ -39,11 +39,36 @@ class RawFactSet(BaseModel):
     requested_date_text: str | None = None
 
 
+class AttemptRecord(BaseModel):
+    """One model call within an extraction, priced at the model it
+    actually used.
+
+    This is the reconstruction source of truth for `cost_usd`: sum
+    `cost_usd` across `ExtractionResult.attempt_records` and it must equal
+    `ExtractionResult.cost_usd`. Summing `input_tokens`/`output_tokens`
+    *across* records and pricing the total at one model would be wrong --
+    SMALL_MODEL and LARGE_MODEL price differently, so a combined token
+    count cannot be priced at all. Each record's own tokens may only ever
+    be priced at that same record's own `model`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+
+
 class ExtractionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message_id: str
     facts: dict[str, Any] = Field(default_factory=dict)
     model: str = "fake"
+    #: The *final* attempt's tokens only -- not summed across attempts.
+    #: On a two-attempt extraction these describe LARGE_MODEL's call, not
+    #: SMALL_MODEL's, and not the two combined. Do not price these against
+    #: `cost_usd` or against `attempts`; use `attempt_records` for a
+    #: correctly-scoped per-attempt breakdown instead.
     input_tokens: int = 0
     output_tokens: int = 0
     parse_failed: bool = False
@@ -52,9 +77,17 @@ class ExtractionResult(BaseModel):
     #: escalating" collapse into one number and the cost argument for
     #: tiering cannot be made.
     attempts: int = 1
-    #: US dollars, computed from PRICES in wca.extract.anthropic. Summed
-    #: across every attempt this extraction actually made.
+    #: US dollars, computed from PRICES in wca.pricing. Summed across
+    #: every attempt this extraction actually made -- see
+    #: `attempt_records` for the per-attempt figures this is reconstructible
+    #: from.
     cost_usd: float = 0.0
+    #: One entry per model call this extraction made, in order. The
+    #: object this whole scope disclaimer is *for*: `cost_usd` must always
+    #: equal `sum(r.cost_usd for r in attempt_records)`. Defaults to `()`
+    #: so `FakeExtractor` (and every existing caller) keeps constructing
+    #: `ExtractionResult` without naming it.
+    attempt_records: tuple[AttemptRecord, ...] = Field(default_factory=tuple)
 
 
 class Extractor(Protocol):

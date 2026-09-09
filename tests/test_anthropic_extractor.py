@@ -128,6 +128,53 @@ def test_an_unparseable_first_response_escalates_and_the_second_succeeds(monkeyp
     assert result.cost_usd == pytest.approx(expected_cost)
 
 
+def test_cost_usd_is_reconstructible_from_attempt_records(monkeypatch):
+    """Fix 1: cost and tokens must never silently disagree.
+
+    `result.input_tokens`/`output_tokens` carry only the final attempt
+    (LARGE_MODEL's 200/20), so pricing *those* against `result.model`
+    would silently under- or over-count a two-attempt extraction.
+    `attempt_records` is the reconstruction path that must actually work:
+    each record priced at its own model, summed, equal to `cost_usd`.
+    """
+    from wca.extract.anthropic import LARGE_MODEL, SMALL_MODEL, AnthropicExtractor, estimate_cost
+    from wca.extract.base import RawFactSet
+
+    client = _stub_client(
+        monkeypatch,
+        [
+            (None, 100, 10),  # SMALL_MODEL: parse_failed
+            (RawFactSet(service_category="colour"), 200, 20),  # LARGE_MODEL: succeeds
+        ],
+    )
+    extractor = AnthropicExtractor(client=client)
+
+    result = extractor.extract("m1", "text", [])
+
+    assert [r.model for r in result.attempt_records] == [SMALL_MODEL, LARGE_MODEL]
+    assert [(r.input_tokens, r.output_tokens) for r in result.attempt_records] == [
+        (100, 10), (200, 20),
+    ]
+    # Each attempt record's own cost, computed at its own model's price --
+    # never the combined tokens priced at one model.
+    assert result.attempt_records[0].cost_usd == pytest.approx(estimate_cost(SMALL_MODEL, 100, 10))
+    assert result.attempt_records[1].cost_usd == pytest.approx(estimate_cost(LARGE_MODEL, 200, 20))
+
+    reconstructed = sum(r.cost_usd for r in result.attempt_records)
+    assert result.cost_usd == pytest.approx(reconstructed)
+    # Naively summing tokens and pricing them all at the *final* model
+    # (result.model) is exactly the wrong-answer-no-warning shape Fix 1
+    # exists to make impossible to produce from the object's own fields --
+    # confirm it actually disagrees with the real cost here, as a sentinel
+    # that this reconstruction test is discriminating and not vacuous.
+    wrong_combined = estimate_cost(
+        result.model,
+        sum(r.input_tokens for r in result.attempt_records),
+        sum(r.output_tokens for r in result.attempt_records),
+    )
+    assert wrong_combined != pytest.approx(result.cost_usd)
+
+
 def test_a_clean_first_response_never_calls_the_large_model(monkeypatch):
     from wca.extract.anthropic import SMALL_MODEL, AnthropicExtractor
     from wca.extract.base import RawFactSet
@@ -160,6 +207,29 @@ def test_both_attempts_failing_returns_the_same_failed_shape_as_today(monkeypatc
     assert result.facts == {}
     assert result.model == LARGE_MODEL
     assert result.attempts == 2
+
+
+def test_constructing_with_the_large_model_makes_exactly_one_call_on_failure(monkeypatch):
+    """Fix 2: escalating to a model you are already on.
+
+    `AnthropicExtractor(model=LARGE_MODEL)` starts on LARGE_MODEL. A
+    failed first attempt has nowhere left to escalate *to* -- retrying
+    LARGE_MODEL against LARGE_MODEL is the same model, a second time, at
+    five times SMALL_MODEL's price, for nothing. This must stop after
+    exactly one call, not two.
+    """
+    from wca.extract.anthropic import LARGE_MODEL, AnthropicExtractor
+
+    client = _stub_client(monkeypatch, [(None, 10, 1)])  # only one response queued
+    extractor = AnthropicExtractor(model=LARGE_MODEL, client=client)
+
+    result = extractor.extract("m1", "text", [])
+
+    assert len(client.messages.calls) == 1
+    assert client.messages.calls[0]["model"] == LARGE_MODEL
+    assert result.attempts == 1
+    assert result.model == LARGE_MODEL
+    assert result.parse_failed is True
 
 
 def test_escalation_never_makes_more_than_max_attempts_calls(monkeypatch):

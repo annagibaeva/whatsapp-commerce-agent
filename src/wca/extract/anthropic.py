@@ -19,7 +19,8 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
-from wca.extract.base import ExtractionResult, RawFactSet, build_facts, load_prompt
+from wca.extract.base import AttemptRecord, ExtractionResult, RawFactSet, build_facts, load_prompt
+from wca.pricing import LARGE_MODEL, PRICES, SMALL_MODEL, estimate_cost
 
 #: `thread_history`'s own roles ("user" for the customer, "assistant" for
 #: the agent) are not the words a customer reads when this is rendered
@@ -28,25 +29,17 @@ from wca.extract.base import ExtractionResult, RawFactSet, build_facts, load_pro
 #: future role does not silently vanish from what the model sees.
 ROLE_LABELS: dict[str, str] = {"user": "customer", "assistant": "agent"}
 
-SMALL_MODEL = "claude-haiku-4-5"
-LARGE_MODEL = "claude-opus-5"
-
-#: US dollars per million tokens. Check against current published prices
-#: before quoting any figure outside this repo.
-PRICES = {
-    SMALL_MODEL: {"input": 1.00, "output": 5.00},
-    LARGE_MODEL: {"input": 5.00, "output": 25.00},
-}
+#: Re-exported from wca.pricing -- see that module for why the model ids
+#: and PRICES table live there and not here. Kept importable from this
+#: module too so existing callers (and tests) that do
+#: `from wca.extract.anthropic import SMALL_MODEL, ...` keep working.
+__all__ = [
+    "SMALL_MODEL", "LARGE_MODEL", "PRICES", "MAX_ATTEMPTS",
+    "estimate_cost", "AnthropicExtractor",
+]
 
 #: One retry, never a loop: SMALL_MODEL, then LARGE_MODEL if that failed.
 MAX_ATTEMPTS = 2
-
-
-def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Dollars for one call, from PRICES -- US dollars per *million*
-    tokens, hence the divisor below."""
-    prices = PRICES[model]
-    return (input_tokens * prices["input"] + output_tokens * prices["output"]) / 1_000_000
 
 
 def _render_turn(turn: Mapping[str, str]) -> str:
@@ -83,6 +76,7 @@ class AnthropicExtractor:
         )
         model = self.model
         total_cost = 0.0
+        records: list[AttemptRecord] = []
         for attempt in range(1, MAX_ATTEMPTS + 1):
             started = time.perf_counter()
             response = self._client.messages.parse(
@@ -92,7 +86,14 @@ class AnthropicExtractor:
                 output_format=RawFactSet,
             )
             usage = response.usage
-            total_cost += estimate_cost(model, usage.input_tokens, usage.output_tokens)
+            call_cost = estimate_cost(model, usage.input_tokens, usage.output_tokens)
+            total_cost += call_cost
+            records.append(AttemptRecord(
+                model=model,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cost_usd=call_cost,
+            ))
 
             facts: dict | None = None
             parsed = getattr(response, "parsed_output", None)
@@ -111,13 +112,20 @@ class AnthropicExtractor:
                     output_tokens=usage.output_tokens,
                     attempts=attempt,
                     cost_usd=total_cost,
+                    attempt_records=tuple(records),
                 )
 
             # This attempt did not produce a usable extraction. Escalate to
-            # LARGE_MODEL for the one retry MAX_ATTEMPTS allows; on the
-            # final attempt, fall through and report the same failed shape
+            # LARGE_MODEL for the one retry MAX_ATTEMPTS allows -- but only
+            # when there is somewhere left to escalate to. Without the
+            # `model != LARGE_MODEL` guard, an extractor already
+            # constructed with LARGE_MODEL (see `__init__`'s `model`
+            # parameter) would "escalate" from LARGE_MODEL to LARGE_MODEL:
+            # the same model, a second time, at five times SMALL_MODEL's
+            # price, for nothing. On the final attempt, or once already on
+            # LARGE_MODEL, fall through and report the same failed shape
             # callers have always gotten.
-            if attempt < MAX_ATTEMPTS:
+            if attempt < MAX_ATTEMPTS and model != LARGE_MODEL:
                 model = LARGE_MODEL
                 continue
             return ExtractionResult(
@@ -126,4 +134,5 @@ class AnthropicExtractor:
                 output_tokens=usage.output_tokens,
                 attempts=attempt,
                 cost_usd=total_cost,
+                attempt_records=tuple(records),
             )
