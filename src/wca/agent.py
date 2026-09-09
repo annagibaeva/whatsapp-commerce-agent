@@ -18,6 +18,7 @@ import json
 from typing import Any, Protocol
 
 from wca.extract.base import load_prompt
+from wca.pricing import estimate_cost
 from wca.tools import TOOL_SPECS, ToolContext, dispatch
 
 #: Small and cheap: the model here only orchestrates tool calls, it never
@@ -73,15 +74,35 @@ class Agent:
         )
         #: Populated fresh by each `run_turn` call -- see its docstring.
         self.tool_calls: list[tuple[str, Any]] = []
+        #: This turn's total cost in US dollars, and how many model calls
+        #: it took to get there. Every iteration of the loop below is a
+        #: real model call -- the second (and any later) call per turn was
+        #: previously invisible to any cost accounting: `extract/` priced
+        #: its own calls but nothing here ever priced the agent's. Reset
+        #: fresh by each `run_turn` call, same as `tool_calls`.
+        self.cost_usd: float = 0.0
+        self.call_count: int = 0
 
     def _call(self, history: list[dict[str, Any]]) -> Any:
-        return self._client.messages.create(
+        response = self._client.messages.create(
             model=self.model,
             max_tokens=1024,
             system=self.system,
             tools=list(TOOL_SPECS),
             messages=history,
         )
+        self.call_count += 1
+        # A test stub's response may carry no `usage` at all (only the
+        # real SDK, and stubs that opt in, do) -- the call still happened
+        # and still counts towards call_count, it just cannot be priced.
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.cost_usd += estimate_cost(
+                self.model,
+                getattr(usage, "input_tokens", 0),
+                getattr(usage, "output_tokens", 0),
+            )
+        return response
 
     def run_turn(self, messages: list[dict[str, Any]]) -> str:
         """Run one turn to completion and return the model's final text.
@@ -99,6 +120,8 @@ class Agent:
         real tool result, never from anything the model says about itself.
         """
         self.tool_calls: list[tuple[str, Any]] = []
+        self.cost_usd = 0.0
+        self.call_count = 0
         history = list(messages)
         response = self._call(history)
 

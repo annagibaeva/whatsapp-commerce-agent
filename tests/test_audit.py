@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from wca.audit import AuditLog
 from wca.clock import utc
 from wca.models import Action, AuditRecord, CitedRule, Proposal, Verdict
@@ -50,3 +52,69 @@ def test_every_record_names_the_ruleset_version_and_the_rules_in_english():
     payload = json.loads(log.to_json())
     assert payload[0]["ruleset_version"] == "abc123def456"
     assert payload[0]["rules_english"] == ["service category is colour"]
+
+
+# --- Fix 3b/3c: turn_cost_usd on the record, cost_for_thread across turns --
+
+def test_a_record_with_no_turn_cost_set_defaults_to_none():
+    """Optional field, default -- every existing AuditRecord(...) call in
+    this codebase (wca.harness in particular, which never sets this)
+    must keep constructing unchanged."""
+    record = _record()
+    assert record.turn_cost_usd is None
+
+
+def test_add_turn_cost_stamps_every_record_appended_since_count_before():
+    log = AuditLog()
+    log.append(_record("prop_0001"))  # before this "turn" started
+    before = len(log)
+    log.append(_record("prop_0002"))
+    log.append(_record("prop_0003"))
+
+    log.add_turn_cost(before, 0.0042)
+
+    records = log.records()
+    assert records[0].turn_cost_usd is None  # untouched: appended before `before`
+    assert records[1].turn_cost_usd == pytest.approx(0.0042)
+    assert records[2].turn_cost_usd == pytest.approx(0.0042)
+
+
+def test_add_turn_cost_over_an_empty_range_is_a_no_op():
+    log = AuditLog()
+    log.append(_record("prop_0001"))
+    before = len(log)  # no records appended after this
+
+    log.add_turn_cost(before, 0.01)  # must not raise
+
+    assert log.records()[0].turn_cost_usd is None
+
+
+def test_cost_for_thread_sums_turn_cost_across_every_record_for_that_thread():
+    """A booking spans several turns -- an earlier request_booking the
+    gate refused, then the one that succeeded, could both leave a record
+    for the same thread_id. cost_for_thread must sum them, not read one."""
+    log = AuditLog()
+    log.append(_record("prop_0001"))  # thread_id "t1", see _record()
+    log.add_turn_cost(0, 0.10)
+    before = len(log)
+    log.append(_record("prop_0002"))
+    log.add_turn_cost(before, 0.25)
+
+    assert log.cost_for_thread("t1") == pytest.approx(0.35)
+    assert log.cost_for_thread("no_such_thread") == 0.0
+
+
+def test_cost_for_thread_is_not_vacuous_against_a_single_record():
+    """Guards against an implementation that reads only the first or
+    last matching record instead of actually summing: with two records
+    for the same thread, the total must differ from either record alone."""
+    log = AuditLog()
+    log.append(_record("prop_0001"))
+    log.add_turn_cost(0, 0.10)
+    before = len(log)
+    log.append(_record("prop_0002"))
+    log.add_turn_cost(before, 0.25)
+
+    total = log.cost_for_thread("t1")
+    assert total != pytest.approx(0.10)
+    assert total != pytest.approx(0.25)

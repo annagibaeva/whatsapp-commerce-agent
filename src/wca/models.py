@@ -109,3 +109,12 @@ class AuditRecord(_Strict):
     calendar_read: dict[str, Any]
     window_read: dict[str, Any]
     decided_at: datetime
+    #: What the conversation turn this record's proposal came out of cost
+    #: in US dollars -- extraction plus every agent model call that turn
+    #: made (see `wca.agent.Agent.cost_usd` and `wca.audit.AuditLog
+    #: .add_turn_cost`). `None` when nothing populated it: `wca.harness`
+    #: builds `AuditRecord`s straight from `propose()`/`evaluate()`, no
+    #: model call and no cost involved, so it never sets this field.
+    #: Optional with a default so every existing `AuditRecord(...)` call
+    #: -- in this codebase and in any test -- keeps constructing unchanged.
+    turn_cost_usd: float | None = None

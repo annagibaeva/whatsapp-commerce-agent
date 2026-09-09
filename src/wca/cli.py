@@ -471,6 +471,13 @@ def build_serve_app(
                 before = len(audit)
                 escalate_tool(ctx, ASK_LOOP_ESCALATION_REASON)
                 _record_new_escalations(before)
+                # No Agent ran on this path, but the extraction above still
+                # made a real model call -- that cost is this turn's whole
+                # cost, and still belongs on whatever record escalate_tool
+                # just appended (if any: escalate_tool's own gate can
+                # refuse, leaving zero new records, in which case this is a
+                # no-op over an empty range).
+                audit.add_turn_cost(before, extraction.cost_usd)
                 reply = FALLBACK_REPLY
             else:
                 # 6. One Agent turn with the tool context and the thread's
@@ -481,6 +488,12 @@ def build_serve_app(
                 before = len(audit)
                 reply = agent.run_turn(turn_messages)
                 _record_new_escalations(before)
+                # This turn's full cost -- extraction plus every model call
+                # the agent loop made -- onto whatever record(s) this turn's
+                # own request_booking/escalate tool calls appended. See
+                # AuditLog.add_turn_cost for why this has to happen after
+                # the turn, not when those records were created.
+                audit.add_turn_cost(before, extraction.cost_usd + agent.cost_usd)
                 offer = _interactive_offer(agent.tool_calls, needed)
 
                 # Still needed after this turn's own attempt (extraction

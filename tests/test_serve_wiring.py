@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+import pytest
 from fastapi.testclient import TestClient
 
 from wca.calendar.mock import MockCalendar, Slot
@@ -58,9 +59,16 @@ class _Block:
 
 
 @dataclass
+class _Usage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass
 class _Response:
     stop_reason: str
     content: list[_Block]
+    usage: Any = None
 
 
 class _StubMessages:
@@ -167,6 +175,7 @@ def _build(
     calendar: Any = None,
     extractor: Any = None,
     client: Any = None,
+    audit: Any = None,
 ):
     transport = FakeTransport()
     if client is None:
@@ -184,6 +193,7 @@ def _build(
         # end-to-end test below already cover that.
         extractor=extractor if extractor is not None else FakeExtractor(script={}),
         transport=transport,
+        audit=audit,
         # No lifespan needed: these tests never touch the reaper or the
         # watchdog, which have their own tests in test_scheduler.py.
         enable_scheduler=False,
@@ -443,6 +453,57 @@ def test_a_legitimate_colour_booking_succeeds_end_to_end_through_run_job():
     assert sent[0].body == "You're all booked in for your colour."
     assert len(calendar.bookings()) == 1
     assert calendar.bookings()[0].slot_id == slot_id
+
+
+def test_the_bookings_audit_record_carries_the_turns_real_cost():
+    """Fix 3b/3c end to end: the same booking as the test above, but with
+    the scripted model responses carrying real usage, proving the cost
+    actually reaches the audit record through the full webhook -> run_job
+    -> Agent -> AuditLog.add_turn_cost path -- not just in a unit test of
+    Agent or AuditLog in isolation."""
+    from wca.audit import AuditLog
+    from wca.agent import MODEL
+    from wca.pricing import estimate_cost
+
+    slot_id = "s_e2e_cost"
+    starts_at = datetime.now(timezone.utc) + timedelta(days=30)
+    while starts_at.weekday() == 6:  # Sunday
+        starts_at += timedelta(days=1)
+    calendar = MockCalendar(slots=[Slot(slot_id, starts_at)])
+
+    extractor = FakeExtractor(script={
+        "wamid.e2e_cost": RawFactSet(is_first_colour_visit=False, customer_is_over_16=True),
+    })
+    client = _ScriptedClient(script=[
+        _Response(
+            stop_reason="tool_use",
+            content=[_Block(type="tool_use", name="request_booking",
+                             input={"service_id": "svc_colour_full", "slot_id": slot_id},
+                             id="call_1")],
+            usage=_Usage(input_tokens=500, output_tokens=50),
+        ),
+        _Response(
+            stop_reason="end_turn",
+            content=[_Block(type="text", text="You're all booked in.")],
+            usage=_Usage(input_tokens=600, output_tokens=20),
+        ),
+    ])
+    audit = AuditLog()
+
+    app, transport, _ = _build(calendar=calendar, extractor=extractor, client=client, audit=audit)
+    tc = TestClient(app)
+
+    r = _post(tc, "wamid.e2e_cost", "447700900012", "I'd like a full colour please")
+
+    assert r.status_code == 200
+    assert len(calendar.bookings()) == 1
+    records = audit.records()
+    assert len(records) == 1
+    # FakeExtractor never reports a cost (see wca.extract.fake), so the
+    # whole turn's cost here is just the agent's two priced calls.
+    expected = estimate_cost(MODEL, 500, 50) + estimate_cost(MODEL, 600, 20)
+    assert records[0].turn_cost_usd == pytest.approx(expected)
+    assert records[0].turn_cost_usd > 0
 
 
 # --- C3: never leave the customer with silence -------------------------------

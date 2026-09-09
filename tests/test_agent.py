@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+import pytest
+
 import wca.agent as agent_module
 from wca.agent import MAX_ITERATIONS, MODEL, Agent
 from wca.audit import AuditLog
@@ -58,9 +60,21 @@ class FakeBlock:
 
 
 @dataclass
+class FakeUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass
 class FakeResponse:
     stop_reason: str
     content: list[FakeBlock]
+    #: Absent (`None`) on every response built by `_tool_call`/`_final_text`
+    #: below -- this is what proves `Agent` tolerates a stub that reports
+    #: no usage at all (only opt-in stubs, and the real SDK, carry one).
+    #: The cost tests further down build `FakeResponse` directly with a
+    #: real `FakeUsage` instead.
+    usage: Any = None
 
 
 class FakeMessages:
@@ -358,3 +372,90 @@ def test_tool_calls_resets_between_turns_on_the_same_agent():
 
     agent.run_turn([{"role": "user", "content": "second"}])
     assert agent.tool_calls == []
+
+
+# --- cost_usd / call_count: instrumenting the agent's own model calls ------
+
+def test_run_turn_prices_every_model_call_it_makes():
+    """Fix 3a: the second (and any later) model call per turn was
+    previously invisible to any cost accounting. Scripts a tool call
+    followed by a final text response -- two real model calls -- each
+    carrying its own usage, and checks both `cost_usd` and `call_count`
+    add up to the whole turn, not just the first call."""
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+    client = FakeClient(script=[
+        FakeResponse(
+            stop_reason="tool_use",
+            content=[FakeBlock(type="tool_use", name="search_catalogue",
+                                input={"query": "colour"}, id="call_1")],
+            usage=FakeUsage(input_tokens=1000, output_tokens=100),
+        ),
+        FakeResponse(
+            stop_reason="end_turn",
+            content=[FakeBlock(type="text", text="here you go")],
+            usage=FakeUsage(input_tokens=1200, output_tokens=50),
+        ),
+    ])
+    agent = Agent(client=client, tool_context=ctx)
+
+    reply = agent.run_turn([{"role": "user", "content": "what colours do you offer"}])
+
+    assert reply == "here you go"
+    assert agent.call_count == 2
+    from wca.pricing import estimate_cost
+    expected = (
+        estimate_cost(MODEL, 1000, 100) + estimate_cost(MODEL, 1200, 50)
+    )
+    assert agent.cost_usd == pytest.approx(expected)
+    # Sentinel: pricing only the first call's usage must NOT match --
+    # otherwise this test would pass even if the second call's cost were
+    # silently dropped.
+    assert agent.cost_usd != pytest.approx(estimate_cost(MODEL, 1000, 100))
+
+
+def test_cost_usd_and_call_count_reset_between_turns():
+    from wca.pricing import estimate_cost
+
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+    client = FakeClient(script=[
+        FakeResponse(
+            stop_reason="end_turn",
+            content=[FakeBlock(type="text", text="first")],
+            usage=FakeUsage(input_tokens=100, output_tokens=10),
+        ),
+        FakeResponse(
+            stop_reason="end_turn",
+            content=[FakeBlock(type="text", text="second")],
+            usage=FakeUsage(input_tokens=200, output_tokens=20),
+        ),
+    ])
+    agent = Agent(client=client, tool_context=ctx)
+
+    agent.run_turn([{"role": "user", "content": "first"}])
+    first_cost = agent.cost_usd
+    assert agent.call_count == 1
+    assert first_cost == pytest.approx(estimate_cost(MODEL, 100, 10))
+
+    agent.run_turn([{"role": "user", "content": "second"}])
+    assert agent.call_count == 1
+    # Just the second turn's own cost -- not first_cost added on top. A
+    # fresh turn starts its accounting at zero.
+    assert agent.cost_usd == pytest.approx(estimate_cost(MODEL, 200, 20))
+    assert agent.cost_usd != pytest.approx(first_cost)
+
+
+def test_a_stub_response_with_no_usage_at_all_still_counts_the_call():
+    """Most of this file's stubs (`_tool_call`/`_final_text`) carry no
+    `usage`. `Agent` must not crash on that -- it just cannot price a
+    call it was told nothing about."""
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+    client = FakeClient(script=[_final_text("hello")])
+    agent = Agent(client=client, tool_context=ctx)
+
+    agent.run_turn([{"role": "user", "content": "hi"}])
+
+    assert agent.call_count == 1
+    assert agent.cost_usd == 0.0
