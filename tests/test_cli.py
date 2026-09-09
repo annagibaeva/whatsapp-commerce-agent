@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 
@@ -20,7 +21,11 @@ def _run(*args):
 def test_cases_runs_with_the_gate_on_and_reports_zero_bad_bookings():
     result = _run("cases")
     assert result.returncode == 0
-    assert "bad bookings        0" in result.stdout
+    # Match on the count, not the exact column spacing -- harness.py owns
+    # that formatting and is out of scope for this change.
+    match = re.search(r"bad bookings\s+(\d+)", result.stdout)
+    assert match is not None, result.stdout
+    assert match.group(1) == "0"
 
 
 def test_cases_with_gate_off_reports_at_least_one_bad_booking_and_exits_nonzero():
