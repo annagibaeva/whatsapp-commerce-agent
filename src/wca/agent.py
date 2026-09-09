@@ -71,6 +71,8 @@ class Agent:
         self.system = load_prompt(SYSTEM_PROMPT_VERSION).format(
             now=tool_context.now.strftime(NOW_FORMAT)
         )
+        #: Populated fresh by each `run_turn` call -- see its docstring.
+        self.tool_calls: list[tuple[str, Any]] = []
 
     def _call(self, history: list[dict[str, Any]]) -> Any:
         return self._client.messages.create(
@@ -88,7 +90,15 @@ class Agent:
         calls the model makes, feeds the results back as a single user
         message (per-call, not split across messages), and repeats until
         the model stops calling tools or `MAX_ITERATIONS` is reached.
+
+        Every dispatched call is also recorded on `self.tool_calls`, as
+        `(name, result)` pairs in the order they ran. That is this turn's
+        one source of truth for "what did the tools actually establish" --
+        `wca.cli` reads it to decide whether the reply can go out as an
+        interactive message, so that decision is always derived from a
+        real tool result, never from anything the model says about itself.
         """
+        self.tool_calls: list[tuple[str, Any]] = []
         history = list(messages)
         response = self._call(history)
 
@@ -102,6 +112,7 @@ class Agent:
                 if getattr(block, "type", None) != "tool_use":
                     continue
                 result = dispatch(self._tools, block.name, block.input)
+                self.tool_calls.append((block.name, result))
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,

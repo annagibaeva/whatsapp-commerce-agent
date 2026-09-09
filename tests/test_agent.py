@@ -299,3 +299,62 @@ def test_a_scripted_availability_then_booking_conversation_ends_in_one_reply():
     # Two tool rounds plus the final text-only response: no intermediate
     # question broke the loop, and only one reply was ever produced.
     assert len(client.messages.calls) == 3
+
+
+# --- tool_calls: the structural record wca.cli reads to shape a reply -------
+
+def test_run_turn_records_each_dispatched_tool_call_and_its_real_result():
+    """`Agent.tool_calls` is what `wca.cli` reads to decide whether a
+    reply can go out as an interactive message -- it must be the tools'
+    actual return values, in call order, not something reconstructed
+    from the model's text."""
+    calendar = _calendar()
+    ctx = _ctx(calendar, facts={
+        "is_first_colour_visit": False, "customer_is_over_16": True, "requested_weekday": "tuesday",
+    })
+    client = FakeClient(script=[
+        _tool_call("check_availability", {"service_id": "svc_colour_full"}, call_id="call_1"),
+        _tool_call(
+            "request_booking",
+            {"service_id": "svc_colour_full", "slot_id": LATER_SLOT},
+            call_id="call_2",
+        ),
+        _final_text("You're booked in."),
+    ])
+    agent = Agent(client=client, tool_context=ctx)
+
+    agent.run_turn([{"role": "user", "content": "book me a colour"}])
+
+    assert [name for name, _ in agent.tool_calls] == ["check_availability", "request_booking"]
+    availability_result, booking_result = (result for _, result in agent.tool_calls)
+    assert isinstance(availability_result, list)
+    assert booking_result["ok"] is True
+
+
+def test_a_fresh_agent_starts_with_no_tool_calls_recorded():
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+    client = FakeClient(script=[])
+    agent = Agent(client=client, tool_context=ctx)
+
+    assert agent.tool_calls == []
+
+
+def test_tool_calls_resets_between_turns_on_the_same_agent():
+    """A second `run_turn` must not carry over the first turn's record --
+    otherwise wca.cli could shape a reply around a tool call from a
+    conversation turn the customer never saw a reply to."""
+    calendar = _calendar()
+    ctx = _ctx(calendar)
+    client = FakeClient(script=[
+        _tool_call("search_catalogue", {"query": "colour"}),
+        _final_text("first reply"),
+        _final_text("second reply"),
+    ])
+    agent = Agent(client=client, tool_context=ctx)
+
+    agent.run_turn([{"role": "user", "content": "first"}])
+    assert len(agent.tool_calls) == 1
+
+    agent.run_turn([{"role": "user", "content": "second"}])
+    assert agent.tool_calls == []
