@@ -2,7 +2,7 @@
 
 *Can an agent be allowed to commit a business's inventory, not just answer questions about it?*
 
-**Anna Gibaeva** · v0 shipped and validated on a live WhatsApp thread · 294 tests · 9 September 2026
+**Anna Gibaeva** · v0 shipped and validated on a live WhatsApp thread · 327 tests · 9 September 2026
 
 ---
 
@@ -45,7 +45,9 @@ for orphans. Twenty hand-labelled cases in five tiers, run with the gate on and 
 WhatsApp Cloud API transport with HMAC-SHA256 signature verification over raw bytes. Tool loop
 against a real model, capped at 8 iterations. Fact extraction from role-labelled history. A hard
 cap of two asks per fact, then escalate — because prompts fail and counters do not. n8n polls two
-endpoints for the 24-hour reminder hop.
+endpoints for the 24-hour reminder hop. Slots go out as a WhatsApp list and yes/no questions as
+buttons, with the shape derived in code from what the tools actually returned — the model has no
+way to declare it.
 
 **Iteration 3 — durable state and a live calendar.** `PLANNED`
 Everything currently lives in one process's memory and is lost on restart. SQLite behind the same
@@ -57,7 +59,7 @@ Planned in `docs/superpowers/plans/2026-09-09-wca-v1.md`.
 | Iter. | Cost & latency factors | Optimizations | Guardrails | Eval metrics |
 |---|---|---|---|---|
 | **1 — the gate** | Gate makes **no model call**, so the decision path costs nothing per proposal. Latency **not measured**. | Rules evaluated as data, not code. Specificity derived from `requires_facts`, not declared. | Six checks. Absolute veto: `deny` and `require_escalation` block against all matching rules, TRUE and UNKNOWN. Blocks labelled *grounding* or *conclusion*. | **MEASURED —** bad bookings 0/20 gate on, 6/20 gate off. Booking rate 4/4. Escalation precision 4/4. Cost of control 0. |
-| **2 — the live thread** | 2 model calls per turn: extraction (haiku) + agent turn with tools (haiku, ≤8 iterations). Token usage captured on extraction only. **Cost per booking not computed.** | History capped at N turns. Message budget 20/hour/thread. Slot labels precomputed in code so the model never does clock arithmetic. | HMAC over raw bytes, rejected before parsing. Dedup inside the queued job, not at the edge. Two-asks-per-fact cap then escalate. Shared-secret auth on both n8n endpoints, closed when unset. | **MEASURED —** 294 tests green. Live thread completed end to end. **NOT MEASURED —** live latency, cost per resolved booking, real-traffic accuracy. |
+| **2 — the live thread** | 2 model calls per turn: extraction (haiku) + agent turn with tools (haiku, ≤8 iterations). Token usage captured on extraction only. **Cost per booking not computed.** | History capped at N turns. Message budget 20/hour/thread. Slot labels precomputed in code so the model never does clock arithmetic. Buttons and lists cut turns by replacing typed answers with taps. | HMAC over raw bytes, rejected before parsing. Dedup inside the queued job, not at the edge. Two-asks-per-fact cap then escalate. Shared-secret auth on both n8n endpoints, closed when unset. Interactive shape derived from tool results, never model-declared. | **MEASURED —** 327 tests green. Live thread completed end to end. **NOT MEASURED —** live latency, cost per resolved booking, real-traffic accuracy. |
 | **3 — durable state** | **PROJECTED —** SQLite adds a write per turn; a live calendar adds a network read inside the gate's synchronous path. | **PROJECTED —** hold ledger in front of the external calendar, since no real calendar API offers a lease. | **PROJECTED —** `view()` must be a live read every call or gate check 5 stops catching external double-bookings. Every new inbound surface must terminate in the same propose → evaluate → commit path. | **PROJECTED —** no numbers exist. Nothing here has been run. |
 
 ### Open items
@@ -117,8 +119,11 @@ flowchart LR
 
     AGENT --> ASK{"asked this fact<br/>twice already?"}
     ASK -->|yes| ESC["escalate to human<br/><b>terminal — no path back</b>"]
-    ASK -->|no| REPLY[reply to customer]
-    COMMIT --> REPLY
+    ASK -->|no| SHAPE{"shape derived from<br/>this turn's tool results<br/><i>not model-declared</i>"}
+    COMMIT --> SHAPE
+    SHAPE -->|"1-10 slots"| LIST[list message<br/>rows = tool's own labels]
+    SHAPE -->|"1 boolean fact missing"| BTN[buttons]
+    SHAPE -->|otherwise / send fails| TXT[plain text]
 
     REAP["reaper<br/>releases expired holds"] -.-> CAL
     N8N["n8n polls hourly<br/>GET /reminders/due<br/>POST /reminders/sent"] -.->|shared secret| CAL
@@ -144,6 +149,11 @@ so it observes and does not block. Wire it to CI and this becomes a solid line �
 cheapest change in the build.
 
 Escalation is drawn in red because it is terminal. Once a thread escalates, nothing brings it back.
+
+The reply shape is a diamond, not a model output. Nothing the model says selects it: the branch is
+recomputed each turn from the tool calls that actually ran and the facts still missing. A model
+that wanted to force a list with no slots behind it has no lever to pull, and every branch carries
+the same reply text — the envelope changes, the words do not.
 
 Every model node says **haiku** because every model call is haiku. There is no tiering in the
 runtime path, whatever the constants say.
