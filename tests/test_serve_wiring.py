@@ -35,6 +35,7 @@ from wca.cli import build_serve_app
 from wca.extract.base import ExtractionResult, RawFactSet
 from wca.extract.fake import FakeExtractor
 from wca.rules.store import load_ruleset
+from wca.tools import human_slot_label
 from wca.transport.fake import FakeTransport
 from wca.transport.webhook import WebhookSettings
 
@@ -602,3 +603,82 @@ def test_a_thread_over_its_message_budget_stops_calling_the_model(monkeypatch):
     assert len(transport.sent()) == 4
     assert transport.sent()[-1].body == cli.FALLBACK_REPLY
     assert transport.sent()[-2].body == cli.FALLBACK_REPLY
+
+
+# --- outbound interactive messages: slots -> list, no choices -> text -------
+
+def _future_slots(n: int, *, start_days: int = 2, hour: int = 14) -> list[Slot]:
+    """`n` real, timezone-aware slots inside check_availability's default
+    14-day lookahead window, far enough out to dodge lead-time rules."""
+    base = datetime.now(timezone.utc) + timedelta(days=start_days)
+    return [
+        Slot(f"s_offer_{i}", (base + timedelta(days=i)).replace(
+            hour=hour, minute=0, second=0, microsecond=0
+        ))
+        for i in range(n)
+    ]
+
+
+def test_offering_slots_sends_a_list_message_with_the_tools_own_labels():
+    """check_availability's own results become the list's rows, verbatim
+    -- see wca.cli._interactive_offer. Never reformatted, never a subset
+    the model chose to mention in its own words."""
+    slots = _future_slots(3)
+    calendar = MockCalendar(slots=slots)
+    expected_labels = [human_slot_label(s.starts_at) for s in slots]
+
+    client = _ScriptedClient(script=[
+        _tool_call("check_availability", {"service_id": "svc_cut"}),
+        _final_text("Here are a few times that work for a cut."),
+    ])
+    app, transport, _ = _build(calendar=calendar, client=client)
+    tc = TestClient(app)
+
+    r = _post(tc, "wamid.offer_slots", "447700900040", "when can I get a cut?")
+
+    assert r.status_code == 200
+    sent = transport.sent()
+    assert len(sent) == 1
+    assert sent[0].list_rows == tuple(expected_labels)
+    assert sent[0].buttons == ()
+    # The body carries the exact same text the customer would have read
+    # as plain prose -- the interactive send is not a second channel.
+    assert sent[0].body == "Here are a few times that work for a cut."
+
+
+def test_eleven_slots_falls_back_to_plain_text_not_a_raise_or_a_truncation():
+    slots = _future_slots(11)
+    calendar = MockCalendar(slots=slots)
+
+    client = _ScriptedClient(script=[
+        _tool_call("check_availability", {"service_id": "svc_cut"}),
+        _final_text("Lots of options this week for a cut."),
+    ])
+    app, transport, _ = _build(calendar=calendar, client=client)
+    tc = TestClient(app)
+
+    r = _post(tc, "wamid.offer_eleven", "447700900041", "when can I get a cut?")
+
+    assert r.status_code == 200
+    sent = transport.sent()
+    assert len(sent) == 1
+    # Fell back to plain text -- no list, no truncated 10-row list either.
+    assert sent[0].list_rows == ()
+    assert sent[0].buttons == ()
+    assert sent[0].body == "Lots of options this week for a cut."
+
+
+def test_a_turn_with_no_choices_still_sends_plain_text():
+    """No tool ran, so there is nothing for _interactive_offer to build an
+    offer out of -- the reply goes out exactly as it always has."""
+    app, transport, _ = _build()
+    tc = TestClient(app)
+
+    r = _post(tc, "wamid.no_choices", "447700900042", "hi there")
+
+    assert r.status_code == 200
+    sent = transport.sent()
+    assert len(sent) == 1
+    assert sent[0].list_rows == ()
+    assert sent[0].buttons == ()
+    assert sent[0].body == "ok: hi there"

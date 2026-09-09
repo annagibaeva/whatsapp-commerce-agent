@@ -95,6 +95,97 @@ MAX_ASKS_PER_FACT = 2
 ASK_LOOP_ESCALATION_REASON = "outside_agent_scope"
 
 
+#: Both `CONVERSATIONAL_FACTS` are booleans (`is_first_colour_visit`,
+#: `customer_is_over_16`), so a single one still missing after a turn is
+#: always a yes/no question -- never a shape the model had to choose.
+YES_NO_LABELS: tuple[str, ...] = ("Yes", "No")
+
+
+def _interactive_offer(
+    tool_calls: list[tuple[str, Any]], needed_facts: set[str]
+) -> tuple[str, list[str]] | None:
+    """What this turn's own tool results justify sending as an
+    interactive message instead of plain text -- or `None` for plain text.
+
+    This is the whole answer to "how does the agent signal an interactive
+    reply": it does not. Nothing here reads anything the model said or
+    declared. The only inputs are `tool_calls` (`Agent.tool_calls` --
+    each tool's name and its actual return value, in the order the tools
+    ran this turn) and `needed_facts` (the same `_facts_still_needed`
+    computation the ask-loop guard above already uses, straight off the
+    ruleset and the conversation's own facts). A model that wanted to
+    force an interactive send with nothing behind it has no lever to pull
+    -- the shape is recomputed here from ground truth every turn, so it
+    cannot drift from what the tools actually returned.
+
+    - A committed booking, or a successful escalation, is always plain
+      text: there is nothing left to choose from.
+    - The most recent `check_availability` call this turn, if it
+      returned a concrete list of slots (1-10 of them -- more is not a
+      list message WhatsApp accepts), becomes a list offer: one row per
+      slot, titled with that slot's own `label`, verbatim.
+    - Otherwise, if exactly one `CONVERSATIONAL_FACTS` entry is still
+      missing, that is a single yes/no question -- buttons.
+    - Anything else -- nothing checked, two facts still missing (a
+      compound question, not a clean yes/no), zero or eleven-plus
+      slots -- is plain text.
+    """
+    booked = any(
+        name == "request_booking" and isinstance(result, dict) and result.get("ok")
+        for name, result in tool_calls
+    )
+    escalated = any(
+        name == "escalate" and isinstance(result, dict) and result.get("ok")
+        for name, result in tool_calls
+    )
+    if booked or escalated:
+        return None
+
+    slot_results = [
+        result for name, result in tool_calls
+        if name == "check_availability" and isinstance(result, list)
+    ]
+    if slot_results:
+        slots = slot_results[-1]
+        labels = [s["label"] for s in slots if isinstance(s, dict) and "label" in s]
+        if 1 <= len(labels) <= 10:
+            return ("list", labels)
+        return None  # zero slots, or more than a list message can hold
+
+    if len(needed_facts) == 1:
+        return ("buttons", list(YES_NO_LABELS))
+
+    return None
+
+
+def _send_reply(
+    transport: Any, to: str, reply: str, offer: tuple[str, list[str]] | None
+) -> None:
+    """Send `reply` -- as the interactive message `offer` describes, if
+    any, falling back to plain text on any failure to send it that way.
+
+    `reply` is always the message body, in either shape: the interactive
+    path is not a second channel with its own content, only a different
+    envelope around the same text the customer would otherwise have
+    read. A send that cannot be expressed as interactive (more rows than
+    `send_list` accepts, a transport error) must not raise and must not
+    leave the customer with silence -- it falls back to the same plain
+    `send_text` this function always ends with otherwise.
+    """
+    if offer is not None:
+        kind, labels = offer
+        try:
+            if kind == "list":
+                transport.send_list(to, reply, labels)
+                return
+            if kind == "buttons":
+                transport.send_buttons(to, reply, labels)
+                return
+        except Exception as exc:
+            print(f"[serve] interactive send ({kind}) failed, falling back to text: {exc!r}")
+    transport.send_text(to, reply)
+
+
 def _facts_still_needed(ruleset: Any, facts: dict[str, Any]) -> set[str]:
     """Which `CONVERSATIONAL_FACTS` a rule that could still apply is
     missing, given what the conversation knows so far.
@@ -364,6 +455,13 @@ def build_serve_app(
             needed = _facts_still_needed(ruleset, state.facts)
             stuck = sorted(f for f in needed if fact_asks.get(f, 0) >= MAX_ASKS_PER_FACT)
 
+            # What, if anything, this turn's own tool results justify
+            # sending as an interactive message -- see _interactive_offer.
+            # Stays None on the ask-loop-escalation path below: that reply
+            # is FALLBACK_REPLY, not something a slot list or a yes/no
+            # question could ever apply to.
+            offer: tuple[str, list[str]] | None = None
+
             if stuck:
                 print(
                     f"[serve] thread {message.thread_id} asked about "
@@ -383,6 +481,7 @@ def build_serve_app(
                 before = len(audit)
                 reply = agent.run_turn(turn_messages)
                 _record_new_escalations(before)
+                offer = _interactive_offer(agent.tool_calls, needed)
 
                 # Still needed after this turn's own attempt (extraction
                 # already ran above; nothing else in this turn writes to
@@ -401,14 +500,19 @@ def build_serve_app(
             # 7. Never leave the customer with silence. Hitting the
             # iteration cap with no final text is an availability trade,
             # not a safety one (see wca.agent's MAX_ITERATIONS docstring)
-            # -- but the customer still needs an answer.
+            # -- but the customer still needs an answer. An interactive
+            # offer only ever makes sense paired with the model's own
+            # text, so an empty reply drops any offer along with it --
+            # FALLBACK_REPLY always goes out as plain text.
+            if not reply:
+                offer = None
             reply = reply or FALLBACK_REPLY
 
             thread_history.append({"role": "user", "content": message.text})
             thread_history.append({"role": "assistant", "content": reply})
             del thread_history[:-MAX_HISTORY_MESSAGES]
 
-            transport.send_text(message.thread_id, reply)
+            _send_reply(transport, message.thread_id, reply, offer)
         except Exception:
             transport.send_text(message.thread_id, FALLBACK_REPLY)
             raise
