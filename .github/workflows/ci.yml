@@ -1,0 +1,56 @@
+name: CI
+
+# The eval used to exit 1 on a bad booking and nothing read the exit code,
+# which made it a dashboard. This file is what turns it into a gate.
+#
+# No secrets are needed and none are configured. The suite makes no network
+# call and no model call -- if a change ever makes CI need an API key, that
+# is the finding, not the fix.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install
+        run: uv sync --frozen
+
+      - name: Tests
+        run: uv run pytest -q
+
+      # Direction one: with the gate on, nothing bad gets booked.
+      # `wca cases` exits 1 if any bad booking got through.
+      - name: No bad bookings with the gate on
+        run: uv run wca cases
+
+      # Direction two, and the one that is easy to forget: with the gate
+      # OFF, bad bookings must still get through. If this ever passes, the
+      # case set has stopped exercising the gate -- every case is now one
+      # the agent would refuse on its own, the gate is doing nothing, and
+      # "0 with the gate on" has become a claim about the cases rather
+      # than about the control. That is a failure of the test set, and it
+      # would otherwise look exactly like success.
+      - name: The gate must still be load-bearing
+        run: |
+          if uv run wca cases --gate-off; then
+            echo "::error::'wca cases --gate-off' exited 0: no bad bookings got through with the gate disabled."
+            echo "::error::The case set no longer exercises the gate. Fix the cases, not this check."
+            exit 1
+          fi
+          echo "Gate off: bad bookings got through, as they must."

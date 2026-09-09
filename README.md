@@ -36,6 +36,18 @@ Two more subcommands exist for the live WhatsApp thread, covered in [docs/live-t
 
 Also verified directly: a hold past its TTL is cleared by the reaper (`MockCalendar.expire_due`) and the slot can be held again, and `gate.evaluate` called twice with identical arguments returns equal verdicts.
 
+## When the gate counts as working
+
+Two numbers decide it, and both directions have to hold:
+
+> **`wca cases` must report 0 bad bookings, and `wca cases --gate-off` must report at least one.**
+
+The second half is the one worth stating. Zero bad bookings with the gate on proves nothing on its own — a case set where every booking is obviously fine produces the same zero. The gate is only shown to be doing work if removing it lets something through. If `--gate-off` ever reports zero, the cases have stopped exercising the gate, and that is a failure of the test set even though it reads like success.
+
+CI enforces both directions on every push, so neither can drift quietly. Today the numbers are 0 and 6.
+
+This rule was written on 9 September 2026, after v0's runs, so it binds changes from here rather than validating what has already been measured. The KPI targets in PRD §7 were set before any run and are the ones that carry that weight.
+
 ## What it does not demonstrate
 
 | Claim | Why not |
@@ -48,7 +60,7 @@ Also verified directly: a hold past its TTL is cleared by the reaper (`MockCalen
 | This works on WhatsApp at scale | One live conversation shows the path works once, if it has been run at all. It does not test two customers at the same time, retry storms, a rejected template, or quality-rating throttling. |
 | Check 6 predicts what Meta will do | It checks time left in the window and template approval. Meta also weighs quality rating and frequency caps, which are not visible to this code. A send that fails after check 6 passed is a finding, not a bug, and the audit record is written so that can be seen when it happens. |
 
-In addition: the live WhatsApp thread described in `docs/live-thread-runbook.md` has not been run as part of this task. The webhook receiver and the send command are wired and covered by unit tests against fakes, but no message has gone in or out over a real WhatsApp number from this codebase.
+The live WhatsApp thread described in `docs/live-thread-runbook.md` **has** been run, once, on 9 September 2026 — messages went in and out over a real WhatsApp number from this codebase. One conversation shows the path works once. It says nothing about two customers at the same time, a redelivery storm, a rejected template, or quality-rating throttling.
 
 ## A note on the test data
 
@@ -56,4 +68,4 @@ In addition: the live WhatsApp thread described in `docs/live-thread-runbook.md`
 
 ## Test count
 
-`uv run pytest -q` reports 164 passed.
+`uv run pytest -q` reports 331 passed as of 9 September 2026. CI runs the same command on every push, along with both directions of the gate check above.
