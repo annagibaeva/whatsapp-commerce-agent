@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <rect width="1200" height="700" fill="#ffffff"/>
+
+  <text x="30" y="40" font-size="23" font-weight="600" fill="#111827">WhatsApp Commerce Agent — v0</text>
+  <text x="30" y="65" font-size="14.5" font-style="italic" fill="#374151">Can an agent be allowed to commit a business's inventory, not just answer questions about it?</text>
+  <text x="30" y="88" font-size="11.5" fill="#6b7280">Anna Gibaeva · v0 shipped, validated on one live WhatsApp thread · 350 tests · CI gates the eval · 9 September 2026</text>
+  <line x1="30" y1="100" x2="1170" y2="100" stroke="#e5e7eb" stroke-width="1"/>
+
+  <!-- use case -->
+  <rect x="30" y="118" width="560" height="120" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="48" y="142" font-size="12" font-weight="600" fill="#111827" letter-spacing="0.5">THE USE CASE</text>
+  <text x="48" y="166" font-size="12.5" fill="#374151">A customer messages a salon. The agent reads the thread, works out the</text>
+  <text x="48" y="184" font-size="12.5" fill="#374151">service and the time, checks a calendar, and books. No human involved.</text>
+  <text x="48" y="208" font-size="12.5" fill="#111827">It may <tspan font-weight="600">hold a slot, book it, or escalate</tspan>. It cannot cancel, cannot</text>
+  <text x="48" y="226" font-size="12.5" fill="#111827">reschedule, and cannot move money.</text>
+
+  <!-- constraint -->
+  <rect x="610" y="118" width="560" height="120" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="628" y="142" font-size="12" font-weight="600" fill="#111827" letter-spacing="0.5">THE BUSINESS CONSTRAINT</text>
+  <text x="628" y="166" font-size="12.5" fill="#374151">An agent that answers wrongly gives a bad answer. An agent that books</text>
+  <text x="628" y="184" font-size="12.5" fill="#374151">wrongly creates an obligation the salon must honour or break.</text>
+  <text x="628" y="208" font-size="12.5" fill="#374151">Webhooks arrive at least once, unordered. A reply window closes after</text>
+  <text x="628" y="226" font-size="12.5" fill="#374151">24 hours. Meta bills per message.</text>
+
+  <!-- iterations -->
+  <text x="30" y="272" font-size="12" font-weight="600" fill="#111827" letter-spacing="0.5">ITERATIONS</text>
+
+  <rect x="30" y="284" width="368" height="112" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+  <rect x="30" y="284" width="368" height="4" rx="2" fill="#059669"/>
+  <text x="48" y="312" font-size="13.5" font-weight="600" fill="#111827">1 · The gate</text>
+  <rect x="326" y="298" width="58" height="18" rx="9" fill="#d1fae5"/>
+  <text x="355" y="311" font-size="10" font-weight="600" fill="#065f46" text-anchor="middle">SHIPPED</text>
+  <text x="48" y="334" font-size="11.5" fill="#374151">Rules as inert data. Six deterministic checks between</text>
+  <text x="48" y="351" font-size="11.5" fill="#374151">a proposal and a commit. Hold with TTL, then idempotent</text>
+  <text x="48" y="368" font-size="11.5" fill="#374151">commit, with a reaper for orphans. Twenty hand-labelled</text>
+  <text x="48" y="385" font-size="11.5" fill="#374151">cases in five tiers, run with the gate on and off.</text>
+
+  <rect x="416" y="284" width="368" height="112" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+  <rect x="416" y="284" width="368" height="4" rx="2" fill="#059669"/>
+  <text x="434" y="312" font-size="13.5" font-weight="600" fill="#111827">2 · The live thread</text>
+  <rect x="712" y="298" width="58" height="18" rx="9" fill="#d1fae5"/>
+  <text x="741" y="311" font-size="10" font-weight="600" fill="#065f46" text-anchor="middle">SHIPPED</text>
+  <text x="434" y="334" font-size="11.5" fill="#374151">HMAC over raw bytes. Tool loop against a real model,</text>
+  <text x="434" y="351" font-size="11.5" fill="#374151">capped at 8. A hard cap of two asks per fact, then escalate</text>
+  <text x="434" y="368" font-size="11.5" fill="#374151">— prompts fail, counters do not. Slots go out as a tappable</text>
+  <text x="434" y="385" font-size="11.5" fill="#374151">list. n8n polls for the 24-hour reminder.</text>
+
+  <rect x="802" y="284" width="368" height="112" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+  <rect x="802" y="284" width="368" height="4" rx="2" fill="#9ca3af"/>
+  <text x="820" y="312" font-size="13.5" font-weight="600" fill="#111827">3 · Durable state, live calendar</text>
+  <rect x="1100" y="298" width="56" height="18" rx="9" fill="#f3f4f6"/>
+  <text x="1128" y="311" font-size="10" font-weight="600" fill="#4b5563" text-anchor="middle">PLANNED</text>
+  <text x="820" y="334" font-size="11.5" fill="#6b7280">Everything currently lives in one process's memory and</text>
+  <text x="820" y="351" font-size="11.5" fill="#6b7280">is lost on restart. SQLite behind the same interfaces</text>
+  <text x="820" y="368" font-size="11.5" fill="#6b7280">first, then a real calendar, reschedule and cancel,</text>
+  <text x="820" y="385" font-size="11.5" fill="#6b7280">then a Flow booking screen. 36 tasks, six phases.</text>
+
+  <!-- results -->
+  <text x="30" y="436" font-size="12" font-weight="600" fill="#111827" letter-spacing="0.5">MEASURED — twenty cases, run with the gate on and again with it off</text>
+
+  <rect x="30" y="450" width="222" height="94" rx="8" fill="#111827"/>
+  <text x="141" y="482" font-size="30" font-weight="600" fill="#ffffff" text-anchor="middle">0 vs 6</text>
+  <text x="141" y="504" font-size="11.5" fill="#e5e7eb" text-anchor="middle">bad bookings, gate on vs off</text>
+  <text x="141" y="524" font-size="10.5" fill="#9ca3af" text-anchor="middle">the whole argument, in one number</text>
+
+  <rect x="266" y="450" width="216" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+  <text x="374" y="482" font-size="30" font-weight="600" fill="#111827" text-anchor="middle">4/4</text>
+  <text x="374" y="504" font-size="11.5" fill="#374151" text-anchor="middle">booking rate · target ≥80%</text>
+  <text x="374" y="524" font-size="10.5" fill="#6b7280" text-anchor="middle">of the cases meant to be booked</text>
+
+  <rect x="496" y="450" width="216" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+  <text x="604" y="482" font-size="30" font-weight="600" fill="#111827" text-anchor="middle">4/4</text>
+  <text x="604" y="504" font-size="11.5" fill="#374151" text-anchor="middle">escalation precision · ≥85%</text>
+  <text x="604" y="524" font-size="10.5" fill="#6b7280" text-anchor="middle">the counter-metric to bad bookings</text>
+
+  <rect x="726" y="450" width="216" height="94" rx="8" fill="#ffffff" stroke="#d1d5db"/>
+  <text x="834" y="482" font-size="30" font-weight="600" fill="#111827" text-anchor="middle">0</text>
+  <text x="834" y="504" font-size="11.5" fill="#374151" text-anchor="middle">cost of control</text>
+  <text x="834" y="524" font-size="10.5" fill="#6b7280" text-anchor="middle">good bookings the gate blocked</text>
+
+  <rect x="956" y="450" width="214" height="94" rx="8" fill="#fffbeb" stroke="#f59e0b"/>
+  <text x="1063" y="480" font-size="26" font-weight="600" fill="#92400e" text-anchor="middle">~$0.04</text>
+  <text x="1063" y="502" font-size="11.5" fill="#78350f" text-anchor="middle">model cost per booking</text>
+  <text x="1063" y="522" font-size="10.5" font-weight="600" fill="#b45309" text-anchor="middle">PROJECTED — not measured</text>
+
+  <!-- open items -->
+  <rect x="30" y="562" width="1140" height="116" rx="8" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="48" y="586" font-size="12" font-weight="600" fill="#111827" letter-spacing="0.5">OPEN — carried into v1</text>
+  <text x="48" y="610" font-size="11.5" fill="#374151"><tspan font-weight="600">The model is not the bill.</tspan> A booking is ~10 messages; messaging overtakes model cost above ~$0.0037 each. Turn count is the lever, not tokens.</text>
+  <text x="48" y="630" font-size="11.5" fill="#374151"><tspan font-weight="600">Escalation is a dead end.</tspan> A ticket reaches a human and the thread never returns to the agent — paid for twice, in messages and in staff time.</text>
+  <text x="48" y="650" font-size="11.5" fill="#374151"><tspan font-weight="600">Cost of control is 0 across four bookable cases.</tspan> Four is not a denominator. It is the number most likely to move as the set grows.</text>
+  <text x="48" y="670" font-size="11.5" fill="#374151"><tspan font-weight="600">A1 is unvalidated.</tspan> The 48-hour patch test is modelled on standard practice; no salon has confirmed it, and three checks depend on it.</text>
+</svg>

@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <rect width="1200" height="700" fill="#ffffff"/>
+
+  <text x="30" y="38" font-size="21" font-weight="600" fill="#111827">WhatsApp Commerce Agent — v0 runtime path</text>
+  <text x="30" y="60" font-size="13" fill="#6b7280">Every model call and every deterministic step is its own node. The gate is the only one with no model behind it.</text>
+
+  <!-- lane labels -->
+  <text x="30" y="98" font-size="11" font-weight="600" fill="#9ca3af" letter-spacing="1">INBOUND — TRUST BOUNDARY</text>
+  <text x="30" y="270" font-size="11" font-weight="600" fill="#9ca3af" letter-spacing="1">DECIDE</text>
+  <text x="30" y="500" font-size="11" font-weight="600" fill="#9ca3af" letter-spacing="1">COMMIT / REFUSE</text>
+
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#6b7280"/>
+    </marker>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#b91c1c"/>
+    </marker>
+    <marker id="ab" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <!-- ROW 1 -->
+  <rect x="30" y="110" width="120" height="52" rx="6" fill="#f3f4f6" stroke="#d1d5db"/>
+  <text x="90" y="133" font-size="12.5" fill="#111827" text-anchor="middle">WhatsApp</text>
+  <text x="90" y="150" font-size="11" fill="#6b7280" text-anchor="middle">Cloud API</text>
+
+  <rect x="190" y="110" width="140" height="52" rx="6" fill="#fef3c7" stroke="#f59e0b"/>
+  <text x="260" y="131" font-size="12.5" fill="#111827" text-anchor="middle">HMAC-SHA256</text>
+  <text x="260" y="148" font-size="10.5" fill="#92400e" text-anchor="middle">raw bytes, before parsing</text>
+
+  <rect x="370" y="110" width="140" height="52" rx="6" fill="#f3f4f6" stroke="#d1d5db"/>
+  <text x="440" y="131" font-size="12.5" fill="#111827" text-anchor="middle">per-thread queue</text>
+  <text x="440" y="148" font-size="10.5" fill="#6b7280" text-anchor="middle">dedup inside the job</text>
+
+  <rect x="550" y="110" width="150" height="52" rx="6" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="625" y="131" font-size="12.5" fill="#111827" text-anchor="middle">fact extraction</text>
+  <text x="625" y="148" font-size="10.5" fill="#1e40af" text-anchor="middle">MODEL · haiku → opus</text>
+
+  <rect x="740" y="110" width="160" height="52" rx="6" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="820" y="131" font-size="12.5" fill="#111827" text-anchor="middle">agent turn · 4 tools</text>
+  <text x="820" y="148" font-size="10.5" fill="#1e40af" text-anchor="middle">MODEL · haiku · ≤8 loops</text>
+
+  <rect x="940" y="103" width="230" height="66" rx="6" fill="#ffffff" stroke="#d1d5db" stroke-dasharray="4 3"/>
+  <text x="1055" y="123" font-size="11.5" fill="#374151" text-anchor="middle">read-only tools</text>
+  <text x="1055" y="140" font-size="10.5" fill="#6b7280" text-anchor="middle">search_catalogue · check_availability</text>
+  <text x="1055" y="156" font-size="10.5" fill="#6b7280" text-anchor="middle">mutate nothing</text>
+
+  <line x1="150" y1="136" x2="185" y2="136" stroke="#6b7280" stroke-width="1.4" marker-end="url(#a)"/>
+  <line x1="330" y1="136" x2="365" y2="136" stroke="#6b7280" stroke-width="1.4" marker-end="url(#a)"/>
+  <line x1="510" y1="136" x2="545" y2="136" stroke="#6b7280" stroke-width="1.4" marker-end="url(#a)"/>
+  <line x1="700" y1="136" x2="735" y2="136" stroke="#6b7280" stroke-width="1.4" marker-end="url(#a)"/>
+  <line x1="900" y1="136" x2="936" y2="136" stroke="#6b7280" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a)"/>
+
+  <!-- ROW 2 -->
+  <rect x="190" y="285" width="150" height="52" rx="6" fill="#f3f4f6" stroke="#d1d5db"/>
+  <text x="265" y="306" font-size="12.5" fill="#111827" text-anchor="middle">propose</text>
+  <text x="265" y="323" font-size="10.5" fill="#6b7280" text-anchor="middle">cites rules, in code</text>
+
+  <rect x="380" y="285" width="130" height="52" rx="6" fill="#f3f4f6" stroke="#d1d5db"/>
+  <text x="445" y="306" font-size="12.5" fill="#111827" text-anchor="middle">hold slot</text>
+  <text x="445" y="323" font-size="10.5" fill="#6b7280" text-anchor="middle">TTL lease</text>
+
+  <rect x="560" y="248" width="360" height="126" rx="8" fill="#111827"/>
+  <text x="740" y="273" font-size="15" font-weight="600" fill="#ffffff" text-anchor="middle">THE GATE — no model call</text>
+  <text x="580" y="298" font-size="11.5" fill="#e5e7eb">1  cited rules exist</text>
+  <text x="580" y="318" font-size="11.5" fill="#e5e7eb">2  facts support them</text>
+  <text x="580" y="338" font-size="11.5" fill="#e5e7eb">3  no more-specific rule missed</text>
+  <text x="760" y="298" font-size="11.5" fill="#e5e7eb">4  booking cites a rule</text>
+  <text x="760" y="318" font-size="11.5" fill="#e5e7eb">5  slot still free</text>
+  <text x="760" y="338" font-size="11.5" fill="#e5e7eb">6  escalation deliverable</text>
+  <text x="740" y="362" font-size="10.5" fill="#9ca3af" text-anchor="middle">pure function · can only block · never supplies an answer</text>
+
+  <line x1="820" y1="162" x2="820" y2="240" stroke="#6b7280" stroke-width="1.4"/>
+  <line x1="820" y1="240" x2="345" y2="240" stroke="#6b7280" stroke-width="1.4"/>
+  <line x1="345" y1="240" x2="265" y2="280" stroke="#6b7280" stroke-width="1.4" marker-end="url(#a)"/>
+  <text x="560" y="234" font-size="10.5" fill="#6b7280" text-anchor="middle">request_booking — the only production caller of commit</text>
+
+  <line x1="340" y1="311" x2="375" y2="311" stroke="#6b7280" stroke-width="1.4" marker-end="url(#a)"/>
+  <line x1="510" y1="311" x2="555" y2="311" stroke="#6b7280" stroke-width="1.4" marker-end="url(#a)"/>
+
+  <!-- retry loop -->
+  <path d="M 920 300 L 990 300 L 990 195 L 820 195" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#ab)"/>
+  <text x="1000" y="248" font-size="10.5" fill="#2563eb">BLOCK reason</text>
+  <text x="1000" y="263" font-size="10.5" fill="#2563eb">returned to model</text>
+
+  <!-- ROW 3 -->
+  <rect x="380" y="520" width="150" height="52" rx="6" fill="#d1fae5" stroke="#059669"/>
+  <text x="455" y="541" font-size="12.5" fill="#065f46" text-anchor="middle">commit</text>
+  <text x="455" y="558" font-size="10.5" fill="#047857" text-anchor="middle">idempotency key</text>
+
+  <rect x="580" y="520" width="150" height="52" rx="6" fill="#f3f4f6" stroke="#d1d5db"/>
+  <text x="655" y="541" font-size="12.5" fill="#111827" text-anchor="middle">release hold</text>
+  <text x="655" y="558" font-size="10.5" fill="#6b7280" text-anchor="middle">mistake undone</text>
+
+  <rect x="780" y="520" width="170" height="52" rx="6" fill="#fee2e2" stroke="#b91c1c"/>
+  <text x="865" y="541" font-size="12.5" fill="#7f1d1d" text-anchor="middle">escalate to human</text>
+  <text x="865" y="558" font-size="10.5" fill="#b91c1c" text-anchor="middle">terminal — no path back</text>
+
+  <rect x="180" y="520" width="150" height="52" rx="6" fill="#f3f4f6" stroke="#d1d5db"/>
+  <text x="255" y="541" font-size="12.5" fill="#111827" text-anchor="middle">audit record</text>
+  <text x="255" y="558" font-size="10.5" fill="#6b7280" text-anchor="middle">rule_id@version</text>
+
+  <line x1="640" y1="374" x2="500" y2="515" stroke="#059669" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="520" y="440" font-size="11.5" font-weight="600" fill="#059669">PASS</text>
+  <line x1="760" y1="374" x2="680" y2="515" stroke="#b91c1c" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="742" y="440" font-size="11.5" font-weight="600" fill="#b91c1c">BLOCK</text>
+  <line x1="378" y1="546" x2="335" y2="546" stroke="#6b7280" stroke-width="1.4" marker-end="url(#a)"/>
+  <line x1="578" y1="560" x2="335" y2="560" stroke="#6b7280" stroke-width="1.2"/>
+
+  <path d="M 820 162 L 820 182 L 1178 182 L 1178 452 L 865 452 L 865 515" fill="none" stroke="#b91c1c" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#ar)"/>
+  <text x="880" y="470" font-size="10.5" fill="#b91c1c">the model calls escalate</text>
+  <line x1="905" y1="372" x2="1035" y2="496" stroke="#059669" stroke-width="1.6" marker-end="url(#a)"/>
+  <!-- eval / CI, solid because it blocks -->
+  <rect x="990" y="500" width="185" height="92" rx="8" fill="#ffffff" stroke="#059669" stroke-width="2"/>
+  <text x="1082" y="524" font-size="12.5" font-weight="600" fill="#065f46" text-anchor="middle">eval harness · CI</text>
+  <text x="1082" y="543" font-size="10.5" fill="#374151" text-anchor="middle">20 cases, gate on and off</text>
+  <text x="1082" y="559" font-size="10.5" fill="#374151" text-anchor="middle">blocks the build both ways</text>
+  <text x="1082" y="578" font-size="10.5" font-weight="600" fill="#059669" text-anchor="middle">0 bad bookings · 6 with gate off</text>
+
+  <rect x="30" y="612" width="1140" height="74" rx="6" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text x="46" y="633" font-size="11.5" fill="#374151"><tspan font-weight="600">Reaper</tspan> releases expired holds. <tspan font-weight="600">n8n</tspan> polls /reminders/due and /reminders/sent for the 24-hour reminder — it is never called by us.</text>
+  <text x="46" y="653" font-size="11.5" fill="#374151">The gate reads no cost, calls no model, and has no field for a corrected booking. A block is the only thing it can produce.</text>
+  <text x="46" y="673" font-size="11.5" fill="#374151"><tspan font-weight="600">A block never escalates by itself.</tspan> The model decides — and escalate is itself gated on whether a human could still reply in time.</text>
+</svg>

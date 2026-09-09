@@ -4,6 +4,16 @@
 
 This is a v0 prototype of a WhatsApp booking assistant for a hair salon. A model reads a customer message and proposes an action. A separate gate, built from a written rule set and calendar state, checks that proposal before anything happens and can only say no. The prototype includes twenty test cases that exercise the rules, a two-phase booking flow with a hold and an idempotent commit, and a webhook receiver for a real WhatsApp thread.
 
+![v0 summary — use case, iterations, and the measured results](docs/img/v0-summary.svg)
+
+## The runtime path
+
+Every model call and every deterministic step is its own node. The gate is the only one with no model behind it.
+
+![v0 runtime path — inbound, the six-check gate, commit or refuse](docs/img/v0-architecture.svg)
+
+Both diagrams are also a two-slide deck: [`docs/img/wca-v0.pptx`](docs/img/wca-v0.pptx).
+
 ## How to run it
 
 Every command below was run against this checkout before being written down.
@@ -68,4 +78,4 @@ The live WhatsApp thread described in `docs/live-thread-runbook.md` **has** been
 
 ## Test count
 
-`uv run pytest -q` reports 331 passed as of 9 September 2026. CI runs the same command on every push, along with both directions of the gate check above.
+`uv run pytest -q` reports 350 passed as of 9 September 2026. CI runs the same command on every push, along with both directions of the gate check above.
