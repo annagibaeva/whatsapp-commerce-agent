@@ -67,7 +67,7 @@ This rule was written on 9 September 2026, after v0's runs, so it binds changes 
 | The test cases match real salon policy | The cases were written and reviewed, not observed. This is PRD assumption A3. |
 | Escalations expire in practice | PRD assumption A2 is unmeasured. The simulated clock proves the mechanism works. It says nothing about how often escalations actually time out in the field. |
 | Policy in other industries is rule-shaped | PRD assumption A4 is untested, and it is the assumption that would hurt most if it turns out false. |
-| This works on WhatsApp at scale | One live conversation shows the path works once, if it has been run at all. It does not test two customers at the same time, retry storms, a rejected template, or quality-rating throttling. |
+| This works on WhatsApp at scale | One live conversation shows the path works once. It does not test two customers at the same time, retry storms, a rejected template, or quality-rating throttling. |
 | Check 6 predicts what Meta will do | It checks time left in the window and template approval. Meta also weighs quality rating and frequency caps, which are not visible to this code. A send that fails after check 6 passed is a finding, not a bug, and the audit record is written so that can be seen when it happens. |
 
 The live WhatsApp thread described in `docs/live-thread-runbook.md` **has** been run, once, on 9 September 2026 — messages went in and out over a real WhatsApp number from this codebase. One conversation shows the path works once. It says nothing about two customers at the same time, a redelivery storm, a rejected template, or quality-rating throttling.
