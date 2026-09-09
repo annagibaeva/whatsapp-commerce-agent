@@ -1,14 +1,21 @@
 import inspect
 import pathlib
 
+import pytest
+
 SOURCE = pathlib.Path("src/wca/extract/anthropic.py")
 
 
 def test_model_ids_have_no_date_suffix():
+    # A wrong model id is a 404, not a validation error -- guard the exact
+    # strings that go over the wire.
     from wca.extract.anthropic import LARGE_MODEL, SMALL_MODEL
 
-    assert SMALL_MODEL == "claude-haiku-4-5"
-    assert LARGE_MODEL == "claude-opus-5"
+    import re
+
+    for model_id in (SMALL_MODEL, LARGE_MODEL):
+        assert not re.search(r"\d{8}", model_id), f"{model_id} looks date-suffixed"
+    assert SMALL_MODEL != LARGE_MODEL
 
 
 def test_no_sampling_parameters_are_ever_sent():
@@ -32,11 +39,144 @@ def test_the_installed_sdk_has_the_method_we_call():
     assert "max_tokens" in sig.parameters
 
 
-def test_prices_cover_both_models():
-    from wca.extract.anthropic import LARGE_MODEL, PRICES, SMALL_MODEL
+def test_estimate_cost_matches_hand_computed_dollars():
+    # PRICES is dollars per *million* tokens -- compute the expected
+    # figure by hand here rather than calling estimate_cost to produce
+    # its own expectation, so a broken divisor (or any other arithmetic
+    # slip) shows up as a real failure.
+    from wca.extract.anthropic import LARGE_MODEL, SMALL_MODEL, estimate_cost
 
-    assert PRICES[SMALL_MODEL] == {"input": 1.00, "output": 5.00}
-    assert PRICES[LARGE_MODEL] == {"input": 5.00, "output": 25.00}
+    small = estimate_cost(SMALL_MODEL, input_tokens=1_000_000, output_tokens=1_000_000)
+    assert small == pytest.approx(1.00 + 5.00)  # $1.00 in + $5.00 out
+
+    large = estimate_cost(LARGE_MODEL, input_tokens=2_000_000, output_tokens=500_000)
+    assert large == pytest.approx(2 * 5.00 + 0.5 * 25.00)  # $10.00 in + $12.50 out
+
+    tiny = estimate_cost(SMALL_MODEL, input_tokens=100, output_tokens=50)
+    assert tiny == pytest.approx((100 * 1.00 + 50 * 5.00) / 1_000_000)
+
+
+# --- A helper stub for the escalation tests below --------------------------
+
+
+def _stub_client(monkeypatch, responses):
+    """`responses` is a list of (parsed_output_or_None, input_tokens,
+    output_tokens), consumed in order -- one per `messages.parse` call.
+    Running past the list raises, which is itself a signal the extractor
+    made more calls than the test expected."""
+    from dataclasses import dataclass
+    from typing import Any
+
+    from wca.extract import anthropic as anthropic_module
+
+    monkeypatch.setattr(anthropic_module, "load_dotenv", lambda *a, **k: None)
+
+    @dataclass
+    class _Usage:
+        input_tokens: int
+        output_tokens: int
+
+    @dataclass
+    class _Response:
+        parsed_output: Any
+        usage: _Usage
+
+    class _StubMessages:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self._responses = list(responses)
+
+        def parse(self, **kwargs: Any) -> _Response:
+            self.calls.append(kwargs)
+            parsed, in_tok, out_tok = self._responses.pop(0)
+            return _Response(parsed_output=parsed, usage=_Usage(in_tok, out_tok))
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.messages = _StubMessages()
+
+    return _StubClient()
+
+
+# --- Escalation: SMALL_MODEL first, LARGE_MODEL once on failure ------------
+
+
+def test_an_unparseable_first_response_escalates_and_the_second_succeeds(monkeypatch):
+    from wca.extract.anthropic import LARGE_MODEL, SMALL_MODEL, AnthropicExtractor, estimate_cost
+    from wca.extract.base import RawFactSet
+
+    client = _stub_client(
+        monkeypatch,
+        [
+            (None, 100, 10),  # SMALL_MODEL: parse_failed
+            (RawFactSet(service_category="colour"), 200, 20),  # LARGE_MODEL: succeeds
+        ],
+    )
+    extractor = AnthropicExtractor(client=client)
+
+    result = extractor.extract("m1", "text", [])
+
+    calls = client.messages.calls
+    assert len(calls) == 2
+    assert calls[0]["model"] == SMALL_MODEL
+    assert calls[1]["model"] == LARGE_MODEL
+    assert result.model == LARGE_MODEL
+    assert result.attempts == 2
+    assert not result.parse_failed
+    assert result.facts == {"service_category": "colour"}
+    expected_cost = estimate_cost(SMALL_MODEL, 100, 10) + estimate_cost(LARGE_MODEL, 200, 20)
+    assert result.cost_usd == pytest.approx(expected_cost)
+
+
+def test_a_clean_first_response_never_calls_the_large_model(monkeypatch):
+    from wca.extract.anthropic import SMALL_MODEL, AnthropicExtractor
+    from wca.extract.base import RawFactSet
+
+    client = _stub_client(monkeypatch, [(RawFactSet(service_category="cut"), 50, 5)])
+    extractor = AnthropicExtractor(client=client)
+
+    result = extractor.extract("m1", "text", [])
+
+    # Assert on the stub's recorded calls, not just the result: this is
+    # what proves the large model was never reached, not merely that the
+    # result happens to say so.
+    assert len(client.messages.calls) == 1
+    assert client.messages.calls[0]["model"] == SMALL_MODEL
+    assert result.model == SMALL_MODEL
+    assert result.attempts == 1
+    assert result.facts == {"service_category": "cut"}
+
+
+def test_both_attempts_failing_returns_the_same_failed_shape_as_today(monkeypatch):
+    from wca.extract.anthropic import LARGE_MODEL, AnthropicExtractor
+
+    client = _stub_client(monkeypatch, [(None, 10, 1), (None, 10, 1)])
+    extractor = AnthropicExtractor(client=client)
+
+    result = extractor.extract("m1", "text", [])
+
+    assert len(client.messages.calls) == 2
+    assert result.parse_failed is True
+    assert result.facts == {}
+    assert result.model == LARGE_MODEL
+    assert result.attempts == 2
+
+
+def test_escalation_never_makes_more_than_max_attempts_calls(monkeypatch):
+    from wca.extract.anthropic import MAX_ATTEMPTS, AnthropicExtractor
+
+    assert MAX_ATTEMPTS == 2  # the cap is a constant, not a magic number
+
+    # Queue more failures than MAX_ATTEMPTS allows. If the extractor ever
+    # looped past the cap it would ask the stub for a third response and
+    # the stub's list.pop(0) would raise IndexError.
+    client = _stub_client(monkeypatch, [(None, 1, 1)] * MAX_ATTEMPTS)
+    extractor = AnthropicExtractor(client=client)
+
+    result = extractor.extract("m1", "text", [])
+
+    assert len(client.messages.calls) == MAX_ATTEMPTS
+    assert result.attempts == MAX_ATTEMPTS
 
 
 # --- Cause 1/2: the thread reaches the model with roles attributed --------
