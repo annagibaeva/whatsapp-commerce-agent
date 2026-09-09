@@ -86,3 +86,71 @@ def test_every_case_gets_an_audit_record():
         # The rules appear in English via rules.render.to_english, one
         # entry per cited rule, in order.
         assert record.rules_english == tuple(to_english(r.condition) for r in cited)
+
+
+# --- the four KPIs the report has to publish ---------------------------
+#
+# The PRD sets six targets and the harness used to print two of them. The
+# labels for the rest were already in the case file; only the arithmetic
+# was missing. These tests pin the arithmetic, not the current numbers --
+# a test asserting "100%" would have to be edited every time a case is
+# added, which is how a suite stops being able to fail.
+
+def test_booking_rate_counts_only_the_cases_meant_to_be_booked():
+    """Denominator is bookable cases, not all twenty.
+
+    Most of the twenty are meant to be refused. Dividing by twenty
+    reports 20% for an agent that booked everything it should have.
+    """
+    report = run_cases(CASES, RULES, REGISTRY, gate_on=True)
+
+    expected = [c.id for c in CASES.cases if c.expect_action == "book" and c.expect_allowed]
+    assert report.bookable == len(expected)
+    assert report.bookable < report.total, "if every case were bookable this test proves nothing"
+    assert report.bookable_booked <= report.bookable
+
+
+def test_escalation_precision_counts_only_escalations_the_agent_raised():
+    """The counter-metric to bad bookings.
+
+    Zero bad bookings is trivially achieved by escalating everything, so
+    the denominator has to be what the agent escalated, not what it
+    should have.
+    """
+    report = run_cases(CASES, RULES, REGISTRY, gate_on=True)
+
+    assert report.escalated == sum(1 for o in report.outcomes if o.action == "escalate")
+    assert report.escalated_correctly <= report.escalated
+
+
+def test_cost_of_control_is_the_bookable_cases_the_gate_stopped():
+    report = run_cases(CASES, RULES, REGISTRY, gate_on=True)
+    assert report.cost_of_control == report.bookable - report.bookable_booked
+
+
+def test_the_gate_can_only_cost_bookings_never_win_them():
+    """Turning the gate on cannot book something turning it off did not.
+
+    The gate only blocks. If gate-on ever completes a bookable case that
+    gate-off missed, the gate is supplying an outcome rather than
+    withholding one, and it has stopped being a control.
+    """
+    on = run_cases(CASES, RULES, REGISTRY, gate_on=True)
+    off = run_cases(CASES, RULES, REGISTRY, gate_on=False)
+
+    booked_on = {o.case_id for o in on.outcomes if o.booked}
+    booked_off = {o.case_id for o in off.outcomes if o.booked}
+    assert booked_on <= booked_off
+    assert on.cost_of_control >= off.cost_of_control
+
+
+def test_the_report_publishes_every_kpi_the_prd_names():
+    """Section 7 of the PRD lists six. Five are printed; deliverability is
+    enforced by gate check 6 rather than counted, since no escalation can
+    pass without it."""
+    text = run_cases(CASES, RULES, REGISTRY, gate_on=True).render()
+
+    for label in ("bad bookings", "booking rate", "escalation precision", "cost of control"):
+        assert label in text, f"{label} missing from the report"
+    # Counts lead, percentages follow -- never a bare percentage.
+    assert "/" in text and "%" in text

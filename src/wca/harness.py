@@ -24,6 +24,18 @@ from wca.propose import propose
 from wca.rules.render import to_english
 from wca.rules.schema import RuleSet
 
+
+def _ratio(hit: int, total: int) -> str:
+    """"4/4   100%", or "0/0     n/a" when there is nothing to divide.
+
+    The counts lead and the percentage follows, never the other way
+    round: 100% of four is a different claim from 100% of four hundred,
+    and a percentage printed alone hides which one this is.
+    """
+    pct = f"{100 * hit / total:.0f}%" if total else "n/a"
+    return f"{hit}/{total}".ljust(6) + pct.rjust(4)
+
+
 START = utc(2026, 8, 21, 9)
 GOOD_SLOT = "s_2026_08_25_1400"
 TAKEN_SLOT = "s_taken"
@@ -39,6 +51,15 @@ class CaseOutcome(BaseModel):
     verdict_matched: bool
     booked: bool
     bad_booking: bool
+    #: This case was one the agent should have completed alone -- the
+    #: denominator for booking rate. Twenty cases is not twenty chances
+    #: to book: most of them are meant to be refused, so "4 of 20" reads
+    #: as failure when 4 of 4 is the target being hit.
+    bookable: bool = False
+    #: This case genuinely needed a human -- the denominator for
+    #: escalation precision, the counter-metric to bad bookings. Without
+    #: it, zero bad bookings is achieved by escalating everything.
+    should_escalate: bool = False
 
 
 class HarnessReport(BaseModel):
@@ -70,17 +91,54 @@ class HarnessReport(BaseModel):
     def conclusion_blocks(self) -> int:
         return sum(1 for o in self.outcomes if o.verdict.kind is BlockKind.CONCLUSION)
 
+    @property
+    def bookable(self) -> int:
+        return sum(1 for o in self.outcomes if o.bookable)
+
+    @property
+    def bookable_booked(self) -> int:
+        return sum(1 for o in self.outcomes if o.bookable and o.booked)
+
+    @property
+    def escalated(self) -> int:
+        return sum(1 for o in self.outcomes if o.action == "escalate")
+
+    @property
+    def escalated_correctly(self) -> int:
+        return sum(1 for o in self.outcomes if o.action == "escalate" and o.should_escalate)
+
+    @property
+    def cost_of_control(self) -> int:
+        """Bookable cases the gate stopped.
+
+        The price of the control, not a failure. A gate that blocks
+        nothing is useless; one that blocks good bookings costs revenue.
+        Reported, never targeted -- twenty cases cannot support a target.
+        """
+        return sum(1 for o in self.outcomes if o.bookable and not o.booked)
+
     def render(self) -> str:
         state = "on" if self.gate_on else "off"
         lines = [
             f"Gate {state}. 20 cases.",
             "",
-            f"  bad bookings        {self.bad_bookings}  (n={self.total})",
-            f"  bookings completed  {self.booked}  (n={self.total})",
-            f"  grounding blocks    {self.grounding_blocks}",
-            f"  conclusion blocks   {self.conclusion_blocks}",
+            f"  bad bookings          {self.bad_bookings}"
+            f"{' ' * 8}target 0",
+            f"  booking rate          {_ratio(self.bookable_booked, self.bookable)}"
+            f"{' ' * 3}target >=80%",
+            f"  escalation precision  {_ratio(self.escalated_correctly, self.escalated)}"
+            f"{' ' * 3}target >=85%",
+            f"  cost of control       {self.cost_of_control}"
+            f"{' ' * 8}reported, not targeted",
             "",
-            "These are counts, not rates. Twenty cases cannot support a percentage.",
+            f"  bookings completed    {self.booked}  (n={self.total})",
+            f"  grounding blocks      {self.grounding_blocks}",
+            f"  conclusion blocks     {self.conclusion_blocks}",
+            "",
+            "Every percentage carries its counts, because twenty cases cannot",
+            "support a rate on their own. Booking rate counts only the cases",
+            "that were meant to be booked -- most of these twenty are meant to",
+            "be refused, so a low 'bookings completed' is the design working.",
             "The cases were written and reviewed, not observed in a real salon.",
         ]
         return "\n".join(lines)
@@ -149,6 +207,8 @@ def run_cases(
             ) if gate_on else True,
             booked=booked,
             bad_booking=booked and case.would_be_bad_booking,
+            bookable=case.expect_action == "book" and case.expect_allowed,
+            should_escalate=case.expect_action == "escalate",
         ))
 
         cited_rules = [
