@@ -2,7 +2,11 @@
 
 **Repo:** `whatsapp-commerce-agent`
 **Author:** Anna Gibaeva
-**Status:** Specification. Build not started. Nothing in this document has been validated in code.
+**Status:** v0 built and validated in code, including one live WhatsApp thread. v1 specified in
+`docs/superpowers/specs/2026-09-09-v1-gap-analysis.md`, not started. Where this document and the
+code disagree, the code is the record. Three disagreements were found on 9 September 2026. Two
+were this document being stale and are corrected below, each marked. The third was the document
+being right and the code being incomplete — outbound interactive messages — and was fixed in code.
 
 ---
 
@@ -121,9 +125,14 @@ own.
 
 ## 6. Versioning and route to MVP
 
-**v0 — the weekend build.** One service (colour), five rules, twenty test cases, mock calendar,
-gate with all six checks, one live WhatsApp thread. Runs against a fake transport so it is fully
-testable offline. Purpose: prove the gate works and measure what it costs in bookings.
+**v0 — the weekend build. Built.** Three services across two categories, five rules, twenty test
+cases, mock calendar, gate with all six checks, one live WhatsApp thread. Runs against a fake
+transport so it is fully testable offline. Purpose: prove the gate works and measure what it costs
+in bookings.
+
+*Corrected 9 September 2026: this said "one service (colour)". The catalogue holds three — two
+colour services and a cut — because a single service cannot exercise a rule that reads
+`service_category`. The broader catalogue is the reason the category rules mean anything.*
 
 **v1 — MVP, one real salon.** Live calendar integration, booking screen as a WhatsApp Flow,
 rescheduling and cancellation, durable state, approved templates for one market.
@@ -151,6 +160,27 @@ all five.
 | Escalation deliverability | Escalations where a human reply could still be sent | 100% |
 | Gate effect | Same tests run with the gate off and on | Published with counts |
 | Cost of control | Bookings the gate blocked that a human then confirmed | Reported, not targeted |
+
+### What v0 measured
+
+Run `uv run wca cases`, and again with `--gate-off`. As of 9 September 2026:
+
+| KPI | Gate on | Gate off | Target |
+|---|---|---|---|
+| Bad bookings | **0** | 6 | 0 |
+| Booking rate | **4/4, 100%** | 4/4, 100% | ≥ 80% |
+| Escalation precision | **4/4, 100%** | 4/4, 100% | ≥ 85% |
+| Escalation deliverability | enforced by check 6 | — | 100% |
+| Gate effect | 0 bad bookings | 6 bad bookings | published |
+| Cost of control | **0** | 0 | reported |
+
+Five targets met, one held by construction: no escalation can pass the gate without check 6, so
+deliverability is enforced rather than counted. Cost of control is zero — over these twenty cases
+the gate blocked nothing that should have been booked. That is the number most likely to move
+once the case set grows, and it is the one to watch.
+
+Booking rate counts only the four cases that were meant to be booked. Twenty cases are not twenty
+chances to book: most of them exist to be refused.
 
 Escalation precision is the counter-metric. Without it, zero bad bookings is achieved by
 refusing to book.
@@ -277,11 +307,16 @@ of collecting. Collecting it is the shortest path from this build to genuine age
 | | |
 |---|---|
 | Messaging | WhatsApp Business Cloud API (test number) |
-| Model | Anthropic API, temperature 0, structured output |
+| Model | Anthropic API, structured output. Temperature is not sent — see below |
 | Language | Python, standard library on the default path |
 | Built with | Claude Code |
 | Scheduling | n8n for the reminder hop |
 | Interface | Interactive messages (3 buttons or a 10-item list); Flow for the booking screen in v1 |
+
+*Corrected 9 September 2026: this said "temperature 0". The code never sends `temperature`,
+`top_p` or `top_k`. All three were removed on Opus 5 and sending any of them returns a 400.
+Determinism now comes from the structure — the gate makes no model call at all, so the decision
+that matters was never temperature-dependent in the first place.*
 
 ---
 
