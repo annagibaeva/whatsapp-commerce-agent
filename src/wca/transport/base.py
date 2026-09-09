@@ -25,9 +25,16 @@ class OutboundMessage(BaseModel):
     to: str
     body: str
     buttons: tuple[str, ...] = ()
+    #: Row titles of a list message, in order -- empty for every other
+    #: kind of send. Mirrors `buttons` above: both exist so a test (or a
+    #: caller) can see what interactive shape actually went out without
+    #: reaching into a transport's own internals.
+    list_rows: tuple[str, ...] = ()
 
 
 class TransportPort(Protocol):
     def send_text(self, to: str, body: str) -> OutboundMessage: ...
 
     def send_buttons(self, to: str, body: str, labels: list[str]) -> OutboundMessage: ...
+
+    def send_list(self, to: str, body: str, labels: list[str]) -> OutboundMessage: ...

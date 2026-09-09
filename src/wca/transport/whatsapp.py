@@ -18,6 +18,14 @@ from wca.transport.base import InboundMessage, OutboundMessage
 GRAPH_VERSION = "v23.0"
 MAX_BUTTONS = 3
 
+#: WhatsApp allows at most ten rows in a list message.
+MAX_LIST_ROWS = 10
+
+#: The fixed label on the button that opens the list itself -- distinct
+#: from the row titles inside it. WhatsApp requires this field; v0 has
+#: no reason to vary it per call.
+LIST_BUTTON_LABEL = "View options"
+
 
 def _visible_text(message: dict[str, Any]) -> str | None:
     """What the customer typed, tapped, or picked -- or None to skip.
@@ -140,3 +148,27 @@ class WhatsAppTransport:
             },
         })
         return OutboundMessage(to=to, body=body, buttons=tuple(labels))
+
+    def send_list(self, to: str, body: str, labels: list[str]) -> OutboundMessage:
+        if len(labels) > MAX_LIST_ROWS:
+            raise ValueError(f"WhatsApp allows at most ten list rows, got {len(labels)}")
+        self._post({
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": body},
+                "action": {
+                    "button": LIST_BUTTON_LABEL,
+                    "sections": [{
+                        "title": "Options",
+                        "rows": [
+                            {"id": f"row_{i}", "title": label}
+                            for i, label in enumerate(labels)
+                        ],
+                    }],
+                },
+            },
+        })
+        return OutboundMessage(to=to, body=body, list_rows=tuple(labels))

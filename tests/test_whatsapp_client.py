@@ -205,6 +205,37 @@ def test_more_than_three_buttons_is_refused_before_any_request():
     assert http.calls == []
 
 
+def test_send_list_builds_an_interactive_list_payload():
+    http = StubHTTP()
+    t = WhatsAppTransport(phone_number_id="PNID", access_token="TOKEN", http=http)
+    t.send_list("447700900123", "Pick a time", ["Tuesday 2:00pm", "Thursday 10:00am"])
+    body = http.calls[0]["json"]
+    assert body["messaging_product"] == "whatsapp"
+    assert body["to"] == "447700900123"
+    assert body["type"] == "interactive"
+    interactive = body["interactive"]
+    assert interactive["type"] == "list"
+    assert interactive["body"]["text"] == "Pick a time"
+    action = interactive["action"]
+    assert "button" in action and action["button"]
+    sections = action["sections"]
+    assert len(sections) == 1
+    titles = [row["title"] for row in sections[0]["rows"]]
+    assert titles == ["Tuesday 2:00pm", "Thursday 10:00am"]
+    # Row ids are present and unique, mirroring send_buttons' btn_{i}.
+    ids = [row["id"] for row in sections[0]["rows"]]
+    assert len(set(ids)) == len(ids)
+
+
+def test_more_than_ten_list_rows_is_refused_before_any_request():
+    http = StubHTTP()
+    t = WhatsAppTransport(phone_number_id="PNID", access_token="TOKEN", http=http)
+    labels = [f"row {i}" for i in range(11)]
+    with pytest.raises(ValueError, match="ten"):
+        t.send_list("447700900123", "Pick", labels)
+    assert http.calls == []
+
+
 def test_the_token_never_appears_in_the_repr():
     t = WhatsAppTransport(phone_number_id="PNID", access_token="SECRET", http=StubHTTP())
     assert "SECRET" not in repr(t)

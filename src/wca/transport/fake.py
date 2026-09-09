@@ -11,6 +11,9 @@ from wca.transport.base import InboundMessage, OutboundMessage
 #: WhatsApp allows three reply buttons. More has to be a list message.
 MAX_BUTTONS = 3
 
+#: WhatsApp allows at most ten rows in a list message.
+MAX_LIST_ROWS = 10
+
 
 class FakeTransport:
     def __init__(self) -> None:
@@ -26,6 +29,13 @@ class FakeTransport:
         if len(labels) > MAX_BUTTONS:
             raise ValueError(f"WhatsApp allows at most three buttons, got {len(labels)}")
         message = OutboundMessage(to=to, body=body, buttons=tuple(labels))
+        self._sent.append(message)
+        return message
+
+    def send_list(self, to: str, body: str, labels: list[str]) -> OutboundMessage:
+        if len(labels) > MAX_LIST_ROWS:
+            raise ValueError(f"WhatsApp allows at most ten list rows, got {len(labels)}")
+        message = OutboundMessage(to=to, body=body, list_rows=tuple(labels))
         self._sent.append(message)
         return message
 
