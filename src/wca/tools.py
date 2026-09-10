@@ -201,6 +201,65 @@ CONVERSATIONAL_FACTS: frozenset[str] = frozenset({
 })
 
 
+def _bookable_alternatives(
+    ctx: ToolContext,
+    slot_id: str,
+    attempted_service_id: str,
+    facts: dict[str, Any],
+    calendar_view: dict[str, Any],
+    window_read: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Every other catalogue service that would actually book at this same
+    slot, right now -- for `request_booking` to attach to a blocked result.
+
+    Same discipline as `wca.cli._interactive_offer`: derived from real tool
+    machinery, not declared by the model and not guessed. For each service
+    in the catalogue other than the one just attempted, this runs the same
+    `propose()` + `gate.evaluate()` pair `request_booking` itself just ran
+    for the real attempt, and only reports a service back if that pair
+    would have resulted in an actual "book" verdict that passed.
+
+    `facts` is the exact dict `request_booking` already built for the
+    attempted service: conversation facts, then catalogue facts, then the
+    slot-derived `hours_until_appointment`/`requested_weekday`. Only
+    `service_category` and `quoted_price_minor` differ per candidate --
+    the slot is the same slot, so its derived facts do not change --
+    `facts_for(candidate)` overwrites exactly those two keys, the same way
+    `request_booking` set them for the attempted service.
+
+    `calendar_view` is the same snapshot already taken while this thread's
+    real hold on `slot_id` was still live (see the call site, which runs
+    this before releasing that hold) -- gate check 5 only asks whether
+    *this thread* currently holds *this slot*, never which service a hold
+    was taken for, so reusing it here is a true read of the slot's actual
+    state, not a fabricated one. No new hold is taken and nothing is
+    committed for any candidate: this only ever evaluates, exactly like
+    the gate itself, which makes no model call and changes nothing either.
+    """
+    alternatives: list[dict[str, Any]] = []
+    for candidate in ctx.catalogue.services:
+        if candidate.id == attempted_service_id:
+            continue
+        candidate_facts = dict(facts)
+        candidate_facts.update(facts_for(candidate))
+        candidate_proposal = propose(
+            thread_id=ctx.conversation.thread_id,
+            facts=candidate_facts,
+            ruleset=ctx.ruleset,
+            slot_id=slot_id,
+            now=ctx.now,
+            counter=ctx.next_counter(),
+        )
+        candidate_verdict = evaluate(candidate_proposal, ctx.ruleset, calendar_view, window_read)
+        if candidate_verdict.allowed and candidate_proposal.action.type == "book":
+            alternatives.append({
+                "service_id": candidate.id,
+                "name": candidate.name,
+                "category": candidate.category,
+            })
+    return alternatives
+
+
 def request_booking(ctx: ToolContext, service_id: str, slot_id: str) -> dict[str, Any]:
     """The gated tool. See the module docstring for the invariant this keeps.
 
@@ -302,7 +361,6 @@ def request_booking(ctx: ToolContext, service_id: str, slot_id: str) -> dict[str
                 "slot_id": booking.slot_id,
             }
         else:
-            ctx.calendar.release(hold.hold_id, reason=verdict.reason or proposal.action.type, now=ctx.now)
             if not verdict.allowed:
                 # A real gate block: the reason the gate gave, verbatim.
                 reason = verdict.reason
@@ -316,7 +374,14 @@ def request_booking(ctx: ToolContext, service_id: str, slot_id: str) -> dict[str
                 reason = f"this needs a person to review: {proposal.action.escalation_reason}"
             else:  # "ask": propose() found a fact it still needs
                 reason = proposal.action.question or "I need more information before I can book this"
-            result = {"ok": False, "reason": reason}
+            # Computed while this thread's real hold on the slot is still
+            # live -- see _bookable_alternatives's own docstring for why
+            # that matters to check 5. Must happen before release() below.
+            alternatives = _bookable_alternatives(
+                ctx, slot_id, service_id, facts, calendar_view, window_read
+            )
+            ctx.calendar.release(hold.hold_id, reason=verdict.reason or proposal.action.type, now=ctx.now)
+            result = {"ok": False, "reason": reason, "alternatives": alternatives}
     finally:
         ctx.audit.append(AuditRecord(
             proposal=proposal,
