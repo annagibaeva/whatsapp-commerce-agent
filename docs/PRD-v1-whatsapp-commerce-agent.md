@@ -9,7 +9,7 @@
 
 ## 1. Summary
 
-v0 asked whether an agent could be allowed to commit a business's inventory. It answered yes, under a deterministic gate, and measured the answer: **0 bad bookings with the gate on, 6 with it off, across twenty cases.**
+v0 asked whether an agent could be allowed to commit a business's inventory. It answered yes, under a deterministic gate, and measured the answer: **0 bad bookings with the gate on, 5 with it off, across 21 cases.**
 
 v1 asks the harder version of the same question. **Does that control still hold when the agent is allowed to plan and act freely?**
 
@@ -33,7 +33,7 @@ Three things converged.
 
 **The gate returns something a planner can use.** A block comes back as `booking_cites_rule` failing, naming the rule and the shortfall. That is a lever. A loop with nothing to reason about is a retry with extra steps.
 
-**The failure mode is known and unaddressed here.** v0 measured what the gate blocks when the agent proposes once. It has never been asked what happens when the planner works around the control rather than through it, and the twenty cases were not written to find out.
+**The failure mode is known and unaddressed here.** v0 measured what the gate blocks when the agent proposes once. It has never been asked what happens when the planner works around the control rather than through it, and the case set was not written to find out.
 
 ### Where this sits
 
@@ -183,7 +183,7 @@ A5 is the assumption a reviewer should push on hardest. A control that catches n
 
 ## 11. What v1 will not prove
 
-**That this works at volume.** The case set grows but stays hand-written. Twenty cases could not support a percentage and a hundred cannot support a deployment.
+**That this works at volume.** The case set grows but stays hand-written. Twenty-one cases cannot support a percentage and a hundred cannot support a deployment.
 
 **That the planner is safe against attacks nobody thought of.** The adversarial tier covers routes that were imagined. A gate that catches four known evasions has not been shown to catch a fifth.
 

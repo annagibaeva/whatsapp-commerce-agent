@@ -2,7 +2,7 @@
 
 *Can an agent be allowed to commit a business's inventory, not just answer questions about it?*
 
-**Anna Gibaeva** · v0 shipped and validated on a live WhatsApp thread · 350 tests · 9 September 2026
+**Anna Gibaeva** · v0 shipped and validated on a live WhatsApp thread · 366 tests · 9 September 2026
 
 ---
 
@@ -39,7 +39,7 @@ Three platform facts shape the build:
 **Iteration 1 — the gate.** `SHIPPED`
 Rules as inert data, evaluated by a closed operator set. Six deterministic checks between a
 proposal and a commit. Two-phase booking: hold with TTL, then idempotent commit, with a reaper
-for orphans. Twenty hand-labelled cases in five tiers, run with the gate on and off.
+for orphans. 21 hand-labelled cases in five tiers, run with the gate on and off.
 
 **Iteration 2 — the live thread.** `SHIPPED`
 WhatsApp Cloud API transport with HMAC-SHA256 signature verification over raw bytes. Tool loop
@@ -58,8 +58,8 @@ Planned in `docs/superpowers/plans/2026-09-09-wca-v1.md`.
 
 | Iter. | Cost & latency factors | Optimizations | Guardrails | Eval metrics |
 |---|---|---|---|---|
-| **1 — the gate** | Gate makes **no model call**, so the decision path costs nothing per proposal. Latency **not measured**. | Rules evaluated as data, not code. Specificity derived from `requires_facts`, not declared. | Six checks. Absolute veto: `deny` and `require_escalation` block against all matching rules, TRUE and UNKNOWN. Blocks labelled *grounding* or *conclusion*. | **MEASURED —** bad bookings 0/20 gate on, 6/20 gate off. Booking rate 4/4. Escalation precision 4/4. Cost of control 0. |
-| **2 — the live thread** | 2 model calls per turn: extraction (haiku) + agent turn with tools (haiku, ≤8 iterations). Extraction, retry and agent-call cost all priced and carried to the audit record. **Not yet measured against real traffic.** | History capped at N turns. Message budget 20/hour/thread. Slot labels precomputed in code so the model never does clock arithmetic. Buttons and lists cut turns by replacing typed answers with taps. | HMAC over raw bytes, rejected before parsing. Dedup inside the queued job, not at the edge. Two-asks-per-fact cap then escalate. Shared-secret auth on both n8n endpoints, closed when unset. Interactive shape derived from tool results, never model-declared. | **MEASURED —** 350 tests green. Live thread completed end to end. **NOT MEASURED —** live latency, cost per resolved booking, real-traffic accuracy. |
+| **1 — the gate** | Gate makes **no model call**, so the decision path costs nothing per proposal. Latency **not measured**. | Rules evaluated as data, not code. Specificity derived from `requires_facts`, not declared. | Six checks. Absolute veto: `deny` and `require_escalation` block against all matching rules, TRUE and UNKNOWN. Blocks labelled *grounding* or *conclusion*. | **MEASURED —** bad bookings 0/21 gate on, 5/21 gate off. Booking rate 6/6. Escalation precision 4/4. Cost of control 0. |
+| **2 — the live thread** | 2 model calls per turn: extraction (haiku) + agent turn with tools (haiku, ≤8 iterations). Extraction, retry and agent-call cost all priced and carried to the audit record. **Not yet measured against real traffic.** | History capped at N turns. Message budget 20/hour/thread. Slot labels precomputed in code so the model never does clock arithmetic. Buttons and lists cut turns by replacing typed answers with taps. | HMAC over raw bytes, rejected before parsing. Dedup inside the queued job, not at the edge. Two-asks-per-fact cap then escalate. Shared-secret auth on both n8n endpoints, closed when unset. Interactive shape derived from tool results, never model-declared. | **MEASURED —** 366 tests green. Live thread completed end to end. **NOT MEASURED —** live latency, cost per resolved booking, real-traffic accuracy. |
 | **3 — durable state** | **PROJECTED —** SQLite adds a write per turn; a live calendar adds a network read inside the gate's synchronous path. | **PROJECTED —** hold ledger in front of the external calendar, since no real calendar API offers a lease. | **PROJECTED —** `view()` must be a live read every call or gate check 5 stops catching external double-bookings. Every new inbound surface must terminate in the same propose → evaluate → commit path. | **PROJECTED —** no numbers exist. Nothing here has been run. |
 
 ### Open items
@@ -89,11 +89,14 @@ Planned in `docs/superpowers/plans/2026-09-09-wca-v1.md`.
 2. **The model is not the bill.** A booking is roughly ten messages, and messaging cost overtakes
    model cost above about $0.0037 per message — below published WhatsApp utility rates in
    essentially every market. Turn count is the cost lever, not tokens. Nothing counts messages yet.
-3. **The gate sees one proposal, never the trajectory.** An action split into two individually
-   legal steps would not be caught. This is the substance of Phase 7.
+3. **The gate now sees the trajectory, for one invariant only.** I-3 blocks a booking that
+   reaches a `(slot, service_category)` pair an earlier verdict in the same conversation refused —
+   which closed a real hole: v0 booked a first-colour visit 20 hours out on a second attempt with
+   `is_first_colour_visit` flipped. Fact stability (I-2) and budget (I-4) are not built, and the
+   trajectory does not survive a restart.
 4. **Escalation is a dead end.** A ticket is raised and its deadline monitored. Nothing resumes the
    thread afterwards, and there is no path from human back to agent.
-5. **Cost of control is 0 over four bookable cases.** Four is too few to claim the gate costs
+5. **Cost of control is 0 over six bookable cases.** Six is too few to claim the gate costs
    nothing. This is the number most likely to move as the case set grows.
 6. **Escalation precision is gameable by the loop guard.** The two-ask cap converts extractor
    failures into escalations. A worse extractor therefore produces a better precision number.
@@ -142,10 +145,10 @@ flowchart LR
     REAP["reaper<br/>releases expired holds"] -.-> CAL
     N8N["n8n polls hourly<br/>GET /reminders/due<br/>POST /reminders/sent"] -.->|shared secret| CAL
 
-    HARNESS["eval harness — 20 cases<br/><i>exits 1 on a bad booking</i><br/><b>not wired to CI: gates nothing</b>"] -.->|observes only| GATE
+    HARNESS["eval harness — 21 cases<br/><i>0 bad bookings on, 5 off</i><br/><b>CI blocks on both directions</b>"] ==>|gates the build| GATE
 
     style GATE fill:#1f2937,color:#fff
-    style HARNESS stroke-dasharray: 5 5
+    style HARNESS stroke:#059669,stroke-width:2px
     style ESC fill:#7f1d1d,color:#fff
 ```
 
@@ -170,7 +173,7 @@ caught. Closing that is Phase 7 of the v1 plan, not something v0 does.
 The honest claim is "plan-and-act within a turn, under a deterministic gate." Not "agentic",
 unqualified.
 
-The eval harness is drawn **solid** because it blocks. CI runs the twenty cases on every push and
+The eval harness is drawn **solid** because it blocks. CI runs the 21 cases on every push and
 fails the build in both directions — no bad bookings with the gate on, and bad bookings still
 getting through with it off. Until 9 September it would have had to be dashed: the harness
 returned a failure code and nothing read it.

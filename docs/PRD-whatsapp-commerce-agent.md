@@ -125,7 +125,7 @@ own.
 
 ## 6. Versioning and route to MVP
 
-**v0 — the weekend build. Built.** Three services across two categories, five rules, twenty test
+**v0 — the weekend build. Built.** Three services across two categories, six rules, 21 test
 cases, mock calendar, gate with all six checks, one live WhatsApp thread. Runs against a fake
 transport so it is fully testable offline. Purpose: prove the gate works and measure what it costs
 in bookings.
@@ -163,23 +163,23 @@ all five.
 
 ### What v0 measured
 
-Run `uv run wca cases`, and again with `--gate-off`. As of 9 September 2026:
+Run `uv run wca cases`, and again with `--gate-off`. As of 10 September 2026, over 21 cases:
 
 | KPI | Gate on | Gate off | Target |
 |---|---|---|---|
-| Bad bookings | **0** | 6 | 0 |
-| Booking rate | **4/4, 100%** | 4/4, 100% | ≥ 80% |
+| Bad bookings | **0** | 5 | 0 |
+| Booking rate | **6/6, 100%** | 6/6, 100% | ≥ 80% |
 | Escalation precision | **4/4, 100%** | 4/4, 100% | ≥ 85% |
 | Escalation deliverability | enforced by check 6 | — | 100% |
-| Gate effect | 0 bad bookings | 6 bad bookings | published |
+| Gate effect | 0 bad bookings | 5 bad bookings | published |
 | Cost of control | **0** | 0 | reported |
 
 Five targets met, one held by construction: no escalation can pass the gate without check 6, so
-deliverability is enforced rather than counted. Cost of control is zero — over these twenty cases
+deliverability is enforced rather than counted. Cost of control is zero — over these 21 cases
 the gate blocked nothing that should have been booked. That is the number most likely to move
 once the case set grows, and it is the one to watch.
 
-Booking rate counts only the four cases that were meant to be booked. Twenty cases are not twenty
+Booking rate counts only the six cases that were meant to be booked. These cases are not 21
 chances to book: most of them exist to be refused.
 
 Escalation precision is the counter-metric. Without it, zero bad bookings is achieved by
@@ -290,7 +290,7 @@ monitored against it.
 **Audit record.** Every booking and every block stores the proposal, the rules cited, the
 verdict, and the state read.
 
-**Test harness.** Twenty cases written before the agent, in tiers: clean, adversarial,
+**Test harness.** Cases written before the agent, in tiers: clean, adversarial,
 override, unanswerable, ambiguous. Run with the gate off and on.
 
 **Fake transport.** Simulated clock, deterministic replay, no Meta account needed to develop.

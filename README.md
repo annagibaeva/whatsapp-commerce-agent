@@ -2,7 +2,7 @@
 
 ## What this is
 
-This is a v0 prototype of a WhatsApp booking assistant for a hair salon. A model reads a customer message and proposes an action. A separate gate, built from a written rule set and calendar state, checks that proposal before anything happens and can only say no. The prototype includes twenty test cases that exercise the rules, a two-phase booking flow with a hold and an idempotent commit, and a webhook receiver for a real WhatsApp thread.
+This is a v0 prototype of a WhatsApp booking assistant for a hair salon. A model reads a customer message and proposes an action. A separate gate, built from a written rule set and calendar state, checks that proposal before anything happens and can only say no. The prototype includes 21 test cases that exercise the rules, a two-phase booking flow with a hold and an idempotent commit, and a webhook receiver for a real WhatsApp thread.
 
 ![v0 summary — use case, iterations, and the measured results](docs/img/v0-summary.svg)
 
@@ -26,13 +26,13 @@ uv run wca cases --gate-off
 uv run wca rules
 ```
 
-`uv run pytest` runs the test suite. `uv run wca cases` runs the twenty cases with the gate on. `uv run wca cases --gate-off` runs the same twenty cases with the gate switched off, for comparison. `uv run wca rules` prints the five rules in the policy file in plain English.
+`uv run pytest` runs the test suite. `uv run wca cases` runs the 21 cases with the gate on. `uv run wca cases --gate-off` runs the same 21 cases with the gate switched off, for comparison. `uv run wca rules` prints the six rules in the policy file in plain English.
 
 Two more subcommands exist for the live WhatsApp thread, covered in [docs/live-thread-runbook.md](docs/live-thread-runbook.md): `uv run wca send --to <number> --text <text>` sends one message, and `uv run wca serve` runs the webhook receiver.
 
 ## What it demonstrates
 
-**Rules as data, no code execution.** `policy/salon.rules.json` holds five rules as JSON: a condition, an outcome, and the source sentence each rule came from. `wca rules` reads that file and prints each rule's condition in English. Nothing in the rule file is executed as code. Changing a rule means editing JSON, not editing Python.
+**Rules as data, no code execution.** `policy/salon.rules.json` holds six rules as JSON: a condition, an outcome, and the source sentence each rule came from. `wca rules` reads that file and prints each rule's condition in English. Nothing in the rule file is executed as code. Changing a rule means editing JSON, not editing Python.
 
 **A missing fact is not a no.** When a fact a rule needs was never established, the proposer asks the customer instead of guessing, and the gate treats an unknown, more-specific rule as reason to block rather than as permission to proceed. Test case `unanswerable_01` in `cases/v0.cases.json` exercises this: whether the visit is a first colour visit was never established, and both the proposer and the gate block the booking on that gap. `wca cases` shows this case passing.
 
@@ -54,7 +54,7 @@ Two numbers decide it, and both directions have to hold:
 
 The second half is the one worth stating. Zero bad bookings with the gate on proves nothing on its own — a case set where every booking is obviously fine produces the same zero. The gate is only shown to be doing work if removing it lets something through. If `--gate-off` ever reports zero, the cases have stopped exercising the gate, and that is a failure of the test set even though it reads like success.
 
-CI enforces both directions on every push, so neither can drift quietly. Today the numbers are 0 and 6.
+CI enforces both directions on every push, so neither can drift quietly. Today the numbers are 0 and 5.
 
 This rule was written on 9 September 2026, after v0's runs, so it binds changes from here rather than validating what has already been measured. The KPI targets in PRD §7 were set before any run and are the ones that carry that weight.
 
@@ -62,7 +62,7 @@ This rule was written on 9 September 2026, after v0's runs, so it binds changes 
 
 | Claim | Why not |
 |---|---|
-| These percentages hold at volume | Twenty cases. One case moves a percentage by five points. Counts are printed, not rates. The targets point in a direction, nothing more. |
+| These percentages hold at volume | 21 cases. One case moves a percentage by five points. Counts are printed, not rates. The targets point in a direction, nothing more. |
 | Salons require a 48-hour patch test | This is PRD assumption A1, based on standard practice and not confirmed with any salon. Check 3, the override cases, and the main demo all depend on it. |
 | The test cases match real salon policy | The cases were written and reviewed, not observed. This is PRD assumption A3. |
 | Escalations expire in practice | PRD assumption A2 is unmeasured. The simulated clock proves the mechanism works. It says nothing about how often escalations actually time out in the field. |
@@ -74,8 +74,8 @@ The live WhatsApp thread described in `docs/live-thread-runbook.md` **has** been
 
 ## A note on the test data
 
-`cases/v0.cases.json` was written and reviewed by hand. It was not observed in a real salon, and none of the twenty cases came from an actual customer conversation. The assumption behind several of them, that salons require a 48-hour patch test before a first colour appointment, is PRD assumption A1 and is unconfirmed.
+`cases/v0.cases.json` was written and reviewed by hand. It was not observed in a real salon, and none of the 21 cases came from an actual customer conversation. The assumption behind several of them, that salons require a 48-hour patch test before a first colour appointment, is PRD assumption A1 and is unconfirmed.
 
 ## Test count
 
-`uv run pytest -q` reports 350 passed as of 9 September 2026. CI runs the same command on every push, along with both directions of the gate check above.
+`uv run pytest -q` reports 366 passed as of 10 September 2026. CI runs the same command on every push, along with both directions of the gate check above.

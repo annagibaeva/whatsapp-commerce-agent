@@ -115,9 +115,9 @@
   <!-- eval / CI, solid because it blocks -->
   <rect x="990" y="500" width="185" height="92" rx="8" fill="#ffffff" stroke="#059669" stroke-width="2"/>
   <text x="1082" y="524" font-size="12.5" font-weight="600" fill="#065f46" text-anchor="middle">eval harness · CI</text>
-  <text x="1082" y="543" font-size="10.5" fill="#374151" text-anchor="middle">20 cases, gate on and off</text>
+  <text x="1082" y="543" font-size="10.5" fill="#374151" text-anchor="middle">21 cases, gate on and off</text>
   <text x="1082" y="559" font-size="10.5" fill="#374151" text-anchor="middle">blocks the build both ways</text>
-  <text x="1082" y="578" font-size="10.5" font-weight="600" fill="#059669" text-anchor="middle">0 bad bookings · 6 with gate off</text>
+  <text x="1082" y="578" font-size="10.5" font-weight="600" fill="#059669" text-anchor="middle">0 bad bookings · 5 with gate off</text>
 
   <rect x="30" y="612" width="1140" height="74" rx="6" fill="#f9fafb" stroke="#e5e7eb"/>
   <text x="46" y="633" font-size="11.5" fill="#374151"><tspan font-weight="600">Reaper</tspan> releases expired holds. <tspan font-weight="600">n8n</tspan> polls /reminders/due and /reminders/sent for the 24-hour reminder — it is never called by us.</text>
