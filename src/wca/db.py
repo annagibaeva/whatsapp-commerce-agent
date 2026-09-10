@@ -46,6 +46,16 @@ CREATE TABLE IF NOT EXISTS bookings (
     cancelled_at TEXT,
     UNIQUE (idempotency_key)
 );
+-- One live booking per slot, enforced by the database rather than by the
+-- check-then-insert in SqliteCalendar.commit. That check reads the table
+-- and then writes it; two threads holding different idempotency keys for
+-- the same slot can both pass the read and both insert. Nothing above
+-- this line stops them -- UNIQUE(idempotency_key) is a different claim.
+-- "No double-booking" is the property this whole system is named for, so
+-- it belongs where it cannot be raced. Partial, because a cancelled
+-- booking must free its slot for the reschedule work still to come.
+CREATE UNIQUE INDEX IF NOT EXISTS one_live_booking_per_slot
+    ON bookings (slot_id) WHERE cancelled_at IS NULL;
 CREATE TABLE IF NOT EXISTS escalations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     thread_id TEXT NOT NULL,

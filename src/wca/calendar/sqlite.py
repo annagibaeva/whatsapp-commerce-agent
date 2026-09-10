@@ -118,12 +118,18 @@ class SqliteCalendar:
             )
             self.conn.commit()
         except sqlite3.IntegrityError:
-            # Lost a race on idempotency_key between the SELECT above and
-            # this INSERT -- the other writer's row is the answer now.
+            # Lost a race between the SELECTs above and this INSERT. Which
+            # race decides the answer, so do not assume it was the key.
             self.conn.rollback()
             row = self._booking_row_by_key(idempotency_key)
             if row is not None:
+                # Same booking, twice. The other writer's row is the answer.
                 return _row_to_booking(row)
+            if self._booking_row_for_slot(hold.slot_id) is not None:
+                # Different booking, same slot: one_live_booking_per_slot
+                # caught what the check at the top of this method could
+                # not, because that check reads before it writes.
+                raise HoldRefused(RefusalReason.ALREADY_BOOKED, hold.slot_id)
             raise
 
         self._ledger.release(hold.hold_id, now)

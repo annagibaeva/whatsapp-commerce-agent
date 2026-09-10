@@ -73,3 +73,41 @@ def test_mark_reminded_and_due_reminders_survive_a_restart(tmp_path):
     again = cal2.mark_reminded(booking.booking_id, now=NOW)
     assert again is not None
     assert again.reminder_sent_at == cal2.bookings()[0].reminder_sent_at
+
+
+def test_the_database_refuses_two_live_bookings_on_one_slot(tmp_path):
+    """The check in `commit` reads the bookings table and then writes it.
+    Two threads holding different idempotency keys for the same slot can
+    both pass that read. `one_live_booking_per_slot` is what stops them,
+    and it stops them in the database, where a race cannot get underneath
+    it. Asserted against raw SQL rather than through `commit`, so it
+    tests the constraint and not the check that sits above it.
+    """
+    import sqlite3
+
+    import pytest
+
+    conn = connect(tmp_path / "one_per_slot.db")
+    init_schema(conn)
+    insert = (
+        "INSERT INTO bookings (booking_id, slot_id, thread_id, service_id, "
+        "booked_at, idempotency_key) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+    conn.execute(insert, ("bk_1", SLOT, "t1", "svc_cut", NOW.isoformat(), "key_one"))
+    conn.commit()
+
+    # Different booking id, different thread, different idempotency key --
+    # every other constraint is satisfied. Only the slot is shared.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(insert, ("bk_2", SLOT, "t2", "svc_cut", NOW.isoformat(), "key_two"))
+
+    conn.rollback()
+    # ...and cancelling the first frees the slot, because the index is
+    # partial. Reschedule depends on this.
+    conn.execute("UPDATE bookings SET cancelled_at = ? WHERE booking_id = ?", (NOW.isoformat(), "bk_1"))
+    conn.execute(insert, ("bk_2", SLOT, "t2", "svc_cut", NOW.isoformat(), "key_two"))
+    conn.commit()
+    live = conn.execute(
+        "SELECT COUNT(*) FROM bookings WHERE slot_id = ? AND cancelled_at IS NULL", (SLOT,)
+    ).fetchone()[0]
+    assert live == 1
