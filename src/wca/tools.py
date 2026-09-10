@@ -28,7 +28,7 @@ from wca.escalation import TemplateRegistry, window_view
 from wca.gate import evaluate
 from wca.ids import idempotency_key as make_idempotency_key
 from wca.ids import proposal_id as make_proposal_id
-from wca.models import Action, AuditRecord, Proposal
+from wca.models import CONVERSATIONAL_FACTS, Action, AuditRecord, Proposal
 from wca.propose import propose
 from wca.rules.render import to_english
 from wca.rules.schema import RuleSet
@@ -195,10 +195,15 @@ DERIVED_FACTS: frozenset[str] = frozenset({
 })
 
 #: Facts only the customer's own words can establish.
-CONVERSATIONAL_FACTS: frozenset[str] = frozenset({
-    "is_first_colour_visit",
-    "customer_is_over_16",
-})
+#: Re-exported from `wca.models`, not redeclared. It lives there because
+#: `gate.py` needs it for I-2 and cannot import from here -- this module
+#: already imports `gate.evaluate`, so the reverse would be circular, and
+#: it also imports `wca.conversation.state`, which `test_gate_purity.py`
+#: forbids the gate from reaching even transitively. Two frozensets with
+#: the same two names would drift the first time someone adds a fact to
+#: one and not the other, and nothing would fail: I-2 would simply stop
+#: protecting the fact it no longer knew about.
+__all__ = ["CONVERSATIONAL_FACTS"]
 
 
 def _bookable_alternatives(
