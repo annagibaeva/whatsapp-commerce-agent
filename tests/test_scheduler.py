@@ -14,9 +14,15 @@ from datetime import timedelta
 
 from wca.calendar.mock import HOLD_TTL_SECONDS, MockCalendar, Slot
 from wca.clock import utc
+from wca.db import connect, init_schema
 from wca.escalation import ESCALATION_MARGIN_HOURS
 from wca.models import EscalationTicket
-from wca.scheduler import check_escalations, reap_expired_holds, run_periodically
+from wca.scheduler import (
+    SqliteEscalationBook,
+    check_escalations,
+    reap_expired_holds,
+    run_periodically,
+)
 
 NOW = utc(2026, 8, 21, 10)
 SLOT = "s_2026_08_25_1400"
@@ -126,6 +132,45 @@ def test_the_watchdog_prints_nothing_for_a_safe_ticket(capsys):
     check_escalations(NOW, [ticket])
 
     assert capsys.readouterr().out == ""
+
+
+# --- SqliteEscalationBook: the property that matters --------------------------
+
+def test_an_open_escalation_survives_a_restart(tmp_path):
+    db_path = tmp_path / "wca.db"
+    conn1 = connect(db_path)
+    init_schema(conn1)
+    ticket = EscalationTicket(
+        thread_id="t1", reason="general", raised_at=NOW,
+        window_closes_at=NOW + timedelta(hours=22), template_name="general_notice",
+    )
+    SqliteEscalationBook(conn1).add(ticket)
+    conn1.close()
+
+    conn2 = connect(db_path)
+    open_tickets = SqliteEscalationBook(conn2).open()
+    assert len(open_tickets) == 1
+    assert open_tickets[0].thread_id == "t1"
+    # check_escalations must actually be able to run against what came
+    # back -- not just that a row exists, but that it round-tripped into
+    # a real EscalationTicket the watchdog can flag.
+    at_risk = check_escalations(NOW + timedelta(hours=20, minutes=30), open_tickets)
+    assert len(at_risk) == 1
+
+
+def test_sqlite_escalation_book_open_is_empty_with_no_tickets(tmp_path):
+    conn = connect(tmp_path / "wca.db")
+    init_schema(conn)
+    assert SqliteEscalationBook(conn).open() == ()
+
+
+def test_sqlite_escalation_book_keeps_every_added_ticket_not_just_the_last(tmp_path):
+    conn = connect(tmp_path / "wca.db")
+    init_schema(conn)
+    book = SqliteEscalationBook(conn)
+    book.add(_ticket(raised_at=NOW, closes_at=NOW + timedelta(hours=10), thread_id="t1"))
+    book.add(_ticket(raised_at=NOW, closes_at=NOW + timedelta(hours=10), thread_id="t2"))
+    assert {t.thread_id for t in book.open()} == {"t1", "t2"}
 
 
 # --- run_periodically ---------------------------------------------------------

@@ -25,6 +25,7 @@ into a background timer, started from FastAPI's `lifespan`.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import datetime
 from typing import Any, Callable, Sequence
 
@@ -75,6 +76,50 @@ class EscalationBook:
 
     def open(self) -> tuple[EscalationTicket, ...]:
         return tuple(self._tickets)
+
+
+class SqliteEscalationBook:
+    """Same contract as `EscalationBook`, backed by the `escalations`
+    table (see `wca.db`).
+
+    The watchdog's whole reason for existing is surviving a restart
+    mid-window -- an escalation raised at hour 2 must still be there to
+    flag at hour 22 even if the process restarted in between. `add`/
+    `open` round-trip through the table rather than the in-memory list.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def add(self, ticket: EscalationTicket) -> None:
+        self._conn.execute(
+            "INSERT INTO escalations (thread_id, reason, raised_at, window_closes_at, template_name) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                ticket.thread_id,
+                ticket.reason,
+                ticket.raised_at.isoformat(),
+                ticket.window_closes_at.isoformat(),
+                ticket.template_name,
+            ),
+        )
+        self._conn.commit()
+
+    def open(self) -> tuple[EscalationTicket, ...]:
+        rows = self._conn.execute(
+            "SELECT thread_id, reason, raised_at, window_closes_at, template_name "
+            "FROM escalations ORDER BY id"
+        ).fetchall()
+        return tuple(
+            EscalationTicket(
+                thread_id=thread_id,
+                reason=reason,
+                raised_at=datetime.fromisoformat(raised_at),
+                window_closes_at=datetime.fromisoformat(window_closes_at),
+                template_name=template_name,
+            )
+            for thread_id, reason, raised_at, window_closes_at, template_name in rows
+        )
 
 
 def check_escalations(
