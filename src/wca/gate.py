@@ -1,4 +1,4 @@
-"""The gate. Six per-action checks, plus two trajectory-aware checks. It
+"""The gate. Six per-action checks, plus three trajectory-aware checks. It
 can only say no.
 
 The gate calls no model. It takes read-only views of the calendar and the
@@ -12,9 +12,12 @@ rules were right and the call was still wrong. Evasion means neither --
 the planner reached a state this trajectory already refused, by a
 different route (I-3), or flipped a fact the trajectory already
 established (I-2) -- see docs/superpowers/specs/
-2026-09-10-v1-trajectory-gate-design.md. `trajectory` is optional and
-defaults to `None`, in which case I-2 and I-3 are both no-ops and every
-other check behaves exactly as it did before either existed.
+2026-09-10-v1-trajectory-gate-design.md. I-4 (budget) is CONCLUSION, not
+EVASION: running out of attempts honestly is a different failure than
+evading a refusal (see the design spec §6 and the comment above the I-4
+check below). `trajectory` is optional and defaults to `None`, in which
+case I-2, I-3 and I-4 are all no-ops and every other check behaves
+exactly as it did before any of them existed.
 """
 
 from __future__ import annotations
@@ -35,6 +38,19 @@ from wca.rules.specificity import is_more_specific, matching_rules, unknown_rule
 
 #: Outcomes that let a booking go ahead.
 ALLOWS_BOOKING = {"allow", "require_deposit"}
+
+#: I-4 (budget). Past this many booking attempts (book/reschedule,
+#: allowed or blocked -- a blocked attempt still spent the budget) in one
+#: trajectory, only `escalate` is permitted. Named rather than a magic
+#: number so `planner.py` (when it lands) imports the same figure instead
+#: of defining its own copy -- see docs/superpowers/plans/
+#: 2026-09-09-wca-v1.md, which already commits to `MAX_REVISIONS = 3`
+#: living in gate.py for exactly that reason. 3 matches
+#: whatsapp-v1-plan-and-act-spec.md §4 (the author's own figure): enough
+#: genuine attempts for a customer to correct a real mistake -- wrong
+#: slot, wrong service -- without giving a decomposition attack room to
+#: grind through cosmetic fact variations hunting for one I-2/I-3 miss.
+MAX_REVISIONS = 3
 
 
 def _true_of_type(ruleset: RuleSet, facts: dict[str, Any], outcome_type: str) -> tuple[Rule, ...]:
@@ -145,6 +161,26 @@ def evaluate(
                         f"({earlier_proposal.proposal_id}) and cannot silently change "
                         f"to {facts[key]!r} now",
                     )
+
+    # I-4 (budget). Past MAX_REVISIONS booking attempts already made in
+    # this trajectory, only escalate is permitted. A blocked attempt
+    # still spent the budget -- the cap bounds how many times the planner
+    # gets to try, not how many times it gets to succeed. CONCLUSION, not
+    # EVASION: running out of budget honestly, without ever reaching a
+    # blocked end state twice, is a different failure than evading one
+    # (design spec §6) -- it is a normal outcome with its own audit
+    # trail, not a reasoning mistake about policy or an attempt to dodge
+    # a refusal.
+    if trajectory is not None and proposal.action.type != "escalate":
+        attempts = sum(
+            1 for p in trajectory.proposals if p.action.type in ("book", "reschedule")
+        )
+        if attempts >= MAX_REVISIONS:
+            return Verdict.blocked(
+                GateCheck.BUDGET_EXHAUSTED, BlockKind.CONCLUSION,
+                f"{attempts} booking attempts already made in this trajectory, at "
+                f"or past the cap of {MAX_REVISIONS}; only escalate is permitted now",
+            )
 
     # 1. Every cited rule exists at the version cited.
     cited = []

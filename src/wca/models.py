@@ -87,6 +87,12 @@ class GateCheck(StrEnum):
     #: slot -- never blocked there before -- slips past it. This check
     #: catches the flip itself, independent of which slot it targets.
     FACT_STABILITY = "fact_stability"
+    #: I-4 (see whatsapp-v1-plan-and-act-spec.md §4). This trajectory has
+    #: already spent its cap of booking attempts (gate.MAX_REVISIONS); only
+    #: `escalate` is permitted now. CONCLUSION, not EVASION -- running out
+    #: of budget honestly, without ever reaching a blocked end state twice,
+    #: is a different failure than evading one (design spec §6).
+    BUDGET_EXHAUSTED = "budget_exhausted"
 
 
 class BlockKind(StrEnum):
@@ -142,11 +148,15 @@ class Trajectory(_Strict):
     "a decision" across this codebase, not two.
 
     Deliberately thin: no `plans` field (no `Plan`/`PlanStep` object
-    exists in this slice, see the design spec's Decision 2), no
-    `fact_ledger` (I-2, fact stability, is not built in this slice, see
-    Decision 4), no `tool_calls` counter (I-4, budget, likewise deferred).
-    Adding fields nothing reads yet would be scope the design spec
-    explicitly does not ask for; this holds exactly what I-3 needs.
+    exists in this slice, see the design spec's Decision 2). I-2 and I-4
+    are both built (gate.py) directly on `proposals`/`verdicts` rather
+    than adding the `fact_ledger` or `tool_calls` fields the design
+    spec's §4 sketches: I-2 compares CONVERSATIONAL_FACTS values across
+    `proposals[i].facts` directly, with no separate sourced ledger, and
+    I-4 counts book/reschedule entries in `proposals` itself rather than
+    keeping a running counter. Both give the same guarantee this slim
+    shape already supports; a `fact_ledger` or `tool_calls` field would
+    be bookkeeping nothing here reads.
 
     Every "append" is a `model_copy` -- `Trajectory` is frozen like every
     other `_Strict` model, so `t.model_copy(update={"proposals": t.proposals

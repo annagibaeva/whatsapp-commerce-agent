@@ -26,7 +26,7 @@ tool this phase is not building.
 from __future__ import annotations
 
 from wca.clock import utc
-from wca.gate import evaluate
+from wca.gate import MAX_REVISIONS, evaluate
 from wca.models import Action, BlockKind, CitedRule, GateCheck, Proposal, Trajectory, Verdict
 from wca.rules.store import load_ruleset
 
@@ -90,13 +90,14 @@ def test_new_enum_members_exist_and_are_distinct():
     assert BlockKind.EVASION not in (BlockKind.GROUNDING, BlockKind.CONCLUSION)
 
 
-def test_i2_enum_member_exists_and_is_distinct():
+def test_i2_and_i4_enum_members_exist_and_are_distinct():
     other_checks = (
         GateCheck.RULES_EXIST, GateCheck.FACTS_SUPPORT, GateCheck.OVERRIDE_MISSED,
         GateCheck.BOOKING_CITES_RULE, GateCheck.SLOT_STILL_FREE,
         GateCheck.ESCALATION_DELIVERABLE, GateCheck.BLOCKED_END_STATE,
     )
     assert GateCheck.FACT_STABILITY not in other_checks
+    assert GateCheck.BUDGET_EXHAUSTED not in other_checks + (GateCheck.FACT_STABILITY,)
 
 
 def test_evaluate_with_no_trajectory_argument_is_unchanged():
@@ -330,4 +331,75 @@ def test_a_derived_fact_changing_between_proposals_is_allowed():
         same_conversational_facts_different_slot, RULES, FREE, DELIVERABLE, trajectory=trajectory
     )
     assert verdict.check is not GateCheck.FACT_STABILITY
+    assert verdict.allowed is True
+
+
+# --- I-4: budget -------------------------------------------------------------
+
+def _allowed_cut_proposal(slot_id: str, proposal_id: str) -> tuple[Proposal, Verdict]:
+    """A clean, unrelated cut booking. No rule in the ruleset reads
+    service_category == 'cut' except cut_allowed itself, so this passes
+    checks 1-6 with nothing else to say -- safe filler for running up a
+    trajectory's attempt count without also tripping I-2 or I-3.
+    """
+    p = _book_proposal(
+        slot_id, {"service_category": "cut"}, cited=("cut_allowed",), proposal_id=proposal_id
+    )
+    v = evaluate(p, RULES, FREE, DELIVERABLE)
+    assert v.allowed is True, "fixture bug: the filler cut booking must actually pass"
+    return p, v
+
+
+def test_past_the_cap_a_booking_is_blocked_and_escalate_still_passes():
+    """MAX_REVISIONS booking attempts already sit in the trajectory (each
+    one allowed -- a blocked attempt would spend the budget just as well,
+    but using allowed fillers here keeps this test from also depending on
+    I-3's own blocking behaviour). The next booking attempt is past the
+    cap and must be refused for budget, not for anything about its own
+    facts; escalate must still get through on the same trajectory.
+    """
+    proposals: list[Proposal] = []
+    verdicts: list[Verdict] = []
+    for i in range(MAX_REVISIONS):
+        p, v = _allowed_cut_proposal(f"s_filler_{i}", f"prop_filler_{i}")
+        proposals.append(p)
+        verdicts.append(v)
+    trajectory = Trajectory(thread_id="t1", proposals=tuple(proposals), verdicts=tuple(verdicts))
+
+    one_past_the_cap = _book_proposal(
+        "s_over_cap", {"service_category": "cut"}, cited=("cut_allowed",), proposal_id="prop_over_cap"
+    )
+    verdict = evaluate(one_past_the_cap, RULES, FREE, DELIVERABLE, trajectory=trajectory)
+    assert verdict.allowed is False
+    assert verdict.check is GateCheck.BUDGET_EXHAUSTED
+    assert verdict.kind is BlockKind.CONCLUSION
+
+    escalate = Proposal(
+        proposal_id="prop_escalate", thread_id="t1",
+        action=Action(type="escalate", escalation_reason="out of booking attempts"),
+        cited_rules=(), facts={}, created_at=NOW,
+    )
+    escalate_verdict = evaluate(escalate, RULES, FREE, DELIVERABLE, trajectory=trajectory)
+    assert escalate_verdict.allowed is True
+
+
+def test_at_exactly_the_cap_a_booking_still_passes():
+    """Off-by-one guard: MAX_REVISIONS - 1 earlier attempts means this
+    proposal is the MAX_REVISIONS-th, still within budget, and must pass
+    on its own merits rather than being refused for budget it has not
+    actually exhausted.
+    """
+    proposals: list[Proposal] = []
+    verdicts: list[Verdict] = []
+    for i in range(MAX_REVISIONS - 1):
+        p, v = _allowed_cut_proposal(f"s_filler_{i}", f"prop_filler_{i}")
+        proposals.append(p)
+        verdicts.append(v)
+    trajectory = Trajectory(thread_id="t1", proposals=tuple(proposals), verdicts=tuple(verdicts))
+
+    at_the_cap = _book_proposal(
+        "s_at_cap", {"service_category": "cut"}, cited=("cut_allowed",), proposal_id="prop_at_cap"
+    )
+    verdict = evaluate(at_the_cap, RULES, FREE, DELIVERABLE, trajectory=trajectory)
+    assert verdict.check is not GateCheck.BUDGET_EXHAUSTED
     assert verdict.allowed is True
