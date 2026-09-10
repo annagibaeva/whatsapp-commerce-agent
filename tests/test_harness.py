@@ -39,10 +39,13 @@ def test_every_case_reaches_the_verdict_it_expects():
 
 
 def test_the_report_prints_counts_next_to_every_rate():
-    text = run_cases(CASES, RULES, REGISTRY, gate_on=True).render()
+    report = run_cases(CASES, RULES, REGISTRY, gate_on=True)
+    text = report.render()
     assert "bad bookings" in text
     assert "n=" in text
-    assert "twenty cases" in text.lower() or "20 cases" in text
+    # The count in the report's own header must track the real case count,
+    # not a number hardcoded when there happened to be twenty cases.
+    assert f"{report.total} cases" in text
 
 
 def test_the_report_separates_grounding_from_conclusion_blocks():

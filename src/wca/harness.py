@@ -120,7 +120,7 @@ class HarnessReport(BaseModel):
     def render(self) -> str:
         state = "on" if self.gate_on else "off"
         lines = [
-            f"Gate {state}. 20 cases.",
+            f"Gate {state}. {self.total} cases.",
             "",
             f"  bad bookings          {self.bad_bookings}"
             f"{' ' * 8}target 0",
@@ -135,9 +135,9 @@ class HarnessReport(BaseModel):
             f"  grounding blocks      {self.grounding_blocks}",
             f"  conclusion blocks     {self.conclusion_blocks}",
             "",
-            "Every percentage carries its counts, because twenty cases cannot",
+            "Every percentage carries its counts, because a handful of cases cannot",
             "support a rate on their own. Booking rate counts only the cases",
-            "that were meant to be booked -- most of these twenty are meant to",
+            "that were meant to be booked -- most of these cases are meant to",
             "be refused, so a low 'bookings completed' is the design working.",
             "The cases were written and reviewed, not observed in a real salon.",
         ]
