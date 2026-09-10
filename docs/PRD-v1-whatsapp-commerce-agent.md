@@ -13,7 +13,7 @@ v0 asked whether an agent could be allowed to commit a business's inventory. It 
 
 v1 asks the harder version of the same question. **Does that control still hold when the agent is allowed to plan and act freely?**
 
-A gate that inspects one action at a time is easy to satisfy when the agent only ever proposes one action. It is a different proposition when the agent can sequence actions, learn from a refusal, and try a different route. That is what an agent actually does, and it is where most deployed agents have no answer.
+A gate that inspects one action at a time is easy to satisfy when the agent only ever proposes one action. It is a different proposition when the agent can sequence actions, learn from a refusal, and try a different route. That is what an agent actually does, and v0 has no answer for it.
 
 Alongside that, v1 makes the thing deployable: state that survives a restart, a real calendar, cancel and reschedule, a booking screen, and approved templates.
 
@@ -31,9 +31,9 @@ Three things converged.
 
 **The loop is already half-built.** v0's agent chooses which of four tools to call and in what order, loops until it stops or hits eight iterations, and sees the gate's own block reason on each pass. What it lacks is not a loop. It is memory the gate can read.
 
-**The gate returns something a planner can use.** A block comes back as `booking_cites_rule` failing, naming the rule and the shortfall. That is a lever. Most refusal paths return a shrug, and a loop with nothing to reason about is a retry with extra steps.
+**The gate returns something a planner can use.** A block comes back as `booking_cites_rule` failing, naming the rule and the shortfall. That is a lever. A loop with nothing to reason about is a retry with extra steps.
 
-**The failure mode is known and unaddressed.** Agent writeups in circulation are happy paths. The interesting question — what happens when the planner works around the control rather than through it — is one almost nobody has built an answer to.
+**The failure mode is known and unaddressed here.** v0 measured what the gate blocks when the agent proposes once. It has never been asked what happens when the planner works around the control rather than through it, and the twenty cases were not written to find out.
 
 ### Where this sits
 
@@ -67,7 +67,7 @@ Unchanged from v0 in structure. What each party gets from v1 is different.
 | **Salon staff** | Owner or receptionist | Bookings that survive a restart, and an escalation that can be handed back rather than absorbed |
 | **Deploying business** | Whoever runs the agent | Evidence that the agent tried things it was not allowed to do and was stopped — counted, not just claimed |
 
-That last row is the one v1 exists for. "The agent behaved" is an assertion. "The agent attempted seven forbidden actions across twenty conversations and completed none of them" is a measurement.
+That last row is the one v1 exists for. "The agent behaved" is an assertion. "The agent attempted N forbidden actions across the case set and completed none of them" is a measurement — and v1 is what makes N a number rather than a shrug.
 
 ---
 
@@ -103,7 +103,7 @@ Plan-and-act with a trajectory-aware gate. Durable state. A live calendar. Cance
 
 **A planner that writes its own plan down.** Planning stays implicit in tool choice for the first slice. An explicit plan object invites plan theatre — a model that writes a beautiful plan and ignores it — and the guard against that solves a problem that does not exist until the plan object does.
 
-**Fact provenance tracing.** Considered and rejected. See §9.
+**Fact provenance tracing.** Considered and rejected — see §8, decision 1.
 
 ---
 
@@ -131,13 +131,13 @@ Plan-and-act with a trajectory-aware gate. Durable state. A live calendar. Cance
 
 ---
 
-## 8. What good judgement looks like here
+## 8. Six decisions, and what each rejected
 
 Six decisions, each of which could reasonably have gone the other way. They are listed because the reasoning is the point, not the outcome.
 
 **1. Facts stay code-derived; the provenance ledger is not built.** The obvious design lets the planner assemble the facts it cites and traces each one to a source. It was rejected. This repo has already fixed a model-supplied lead time that let a first colour visit book 10 hours out, and a model-supplied weekday that booked a Sunday. A structural guarantee — there is no path for the model to supply a fact — beats a traced one, and costs nothing to enforce because it is already enforced.
 
-**2. The thin gate before durable state.** The plan's own sequencing said durable state first. That is wrong for this build: a trajectory has to outlive a conversation, not a process. In-memory proves the control works; SQLite proves nothing new and delays the only part of the roadmap nobody else has.
+**2. The thin gate before durable state.** The plan's own sequencing said durable state first. That is wrong for this build: a trajectory has to outlive a conversation, not a process. In-memory proves the control works; SQLite is the same save-and-reload shape this codebase already has four times over, and building it first delays the only part of v1 that is not standard wiring.
 
 **3. Adversarial cases before the planner.** Write them after and you are writing tests against behaviour you have already watched, which is how a suite quietly loses the ability to fail. They go in as failing tests first — that failure output is the non-vacuity proof, and it only exists before the fix.
 
