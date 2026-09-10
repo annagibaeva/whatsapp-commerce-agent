@@ -90,6 +90,15 @@ def test_new_enum_members_exist_and_are_distinct():
     assert BlockKind.EVASION not in (BlockKind.GROUNDING, BlockKind.CONCLUSION)
 
 
+def test_i2_enum_member_exists_and_is_distinct():
+    other_checks = (
+        GateCheck.RULES_EXIST, GateCheck.FACTS_SUPPORT, GateCheck.OVERRIDE_MISSED,
+        GateCheck.BOOKING_CITES_RULE, GateCheck.SLOT_STILL_FREE,
+        GateCheck.ESCALATION_DELIVERABLE, GateCheck.BLOCKED_END_STATE,
+    )
+    assert GateCheck.FACT_STABILITY not in other_checks
+
+
 def test_evaluate_with_no_trajectory_argument_is_unchanged():
     """gate.evaluate's new parameter is optional and defaults to None --
     every existing caller (wca.harness, wca.tools) keeps behaving exactly
@@ -253,3 +262,72 @@ def test_override_01_never_books_even_after_a_flipped_retry():
         assert verdict.allowed is False, f"override_01 booked on retry with facts {attempt_facts}"
         assert verdict.check is GateCheck.BLOCKED_END_STATE
         assert verdict.kind is BlockKind.EVASION
+
+
+# --- I-2: a CONVERSATIONAL_FACTS value cannot silently change value --------
+
+def test_a_flipped_conversational_fact_at_a_different_slot_is_blocked_by_i2():
+    """I-3's blind spot, named in the design spec's Decision 4: a flip
+    aimed at a slot I-3 never blocked. The earlier block was at SLOT;
+    this attempt targets a genuinely different, farther-out OTHER_SLOT,
+    so I-3's (slot_id, service_category) comparable does not match and
+    I-3 has nothing to say -- it would let this through. Only I-2, which
+    compares the CONVERSATIONAL_FACTS values themselves rather than the
+    end state, catches that is_first_colour_visit silently flipped from
+    True to False with no new customer message behind it.
+    """
+    blocked, blocked_verdict = _blocked_first_attempt()
+    trajectory = Trajectory(thread_id="t1", proposals=(blocked,), verdicts=(blocked_verdict,))
+
+    flipped_at_other_slot = _book_proposal(
+        OTHER_SLOT,
+        {"service_category": "colour", "is_first_colour_visit": False,
+         "quoted_price_minor": 9000, "customer_is_over_16": True,
+         "requested_weekday": "tuesday", "hours_until_appointment": 72},
+    )
+    verdict = evaluate(flipped_at_other_slot, RULES, FREE, DELIVERABLE, trajectory=trajectory)
+    assert verdict.check is GateCheck.FACT_STABILITY
+    assert verdict.kind is BlockKind.EVASION
+    # The point of this test: I-3 would miss it (different slot), so the
+    # block above must be coming from I-2, not from I-3 firing anyway.
+    assert verdict.check is not GateCheck.BLOCKED_END_STATE
+
+
+def test_without_the_flip_the_same_different_slot_passes_cleanly():
+    """Sanity check that OTHER_SLOT genuinely would book on its own --
+    proves the block above comes from the fact flip, not from OTHER_SLOT
+    being unbookable for some unrelated reason."""
+    unflipped_at_other_slot = _book_proposal(
+        OTHER_SLOT,
+        {"service_category": "colour", "is_first_colour_visit": True,
+         "quoted_price_minor": 9000, "customer_is_over_16": True,
+         "requested_weekday": "tuesday", "hours_until_appointment": 72},
+        cited=("colour_allowed", "patch_test_first_colour"),
+    )
+    verdict = evaluate(unflipped_at_other_slot, RULES, FREE, DELIVERABLE)
+    assert verdict.allowed is True
+
+
+def test_a_derived_fact_changing_between_proposals_is_allowed():
+    """I-2 must not be too aggressive: hours_until_appointment and
+    requested_weekday are DERIVED_FACTS, recomputed fresh from the slot
+    on every call. A genuinely different, farther-out slot legitimately
+    has a different value for both -- every CONVERSATIONAL_FACTS value
+    stays exactly the same here, only the derived ones move -- and that
+    alone must never be treated as evasion.
+    """
+    blocked, blocked_verdict = _blocked_first_attempt()
+    trajectory = Trajectory(thread_id="t1", proposals=(blocked,), verdicts=(blocked_verdict,))
+
+    same_conversational_facts_different_slot = _book_proposal(
+        OTHER_SLOT,
+        {"service_category": "colour", "is_first_colour_visit": True,
+         "quoted_price_minor": 9000, "customer_is_over_16": True,
+         "requested_weekday": "wednesday", "hours_until_appointment": 96},
+        cited=("colour_allowed", "patch_test_first_colour"),
+    )
+    verdict = evaluate(
+        same_conversational_facts_different_slot, RULES, FREE, DELIVERABLE, trajectory=trajectory
+    )
+    assert verdict.check is not GateCheck.FACT_STABILITY
+    assert verdict.allowed is True

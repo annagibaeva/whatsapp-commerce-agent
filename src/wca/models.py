@@ -38,6 +38,24 @@ class CitedRule(_Strict):
         return f"{self.rule_id}@{self.version}"
 
 
+#: Facts only the customer's own words can establish -- mirrors
+#: wca.tools.CONVERSATIONAL_FACTS, which is the source of truth for this
+#: classification (guarded there by
+#: test_every_fact_the_ruleset_reads_is_classified). Not imported from
+#: wca.tools directly: wca.tools already does `from wca.gate import
+#: evaluate`, so a gate -> tools import would be circular, and wca.tools
+#: also imports wca.conversation.state, a prefix test_gate_purity.py's
+#: BANNED_PREFIXES explicitly forbids gate.py from pulling in even
+#: transitively. wca.models is a leaf both wca.gate and wca.tools already
+#: import from without incident, so the classification lives here instead
+#: -- gate.py reads it without gaining any new import edge, and it never
+#: has to be re-listed inline in gate.py itself.
+CONVERSATIONAL_FACTS: frozenset[str] = frozenset({
+    "is_first_colour_visit",
+    "customer_is_over_16",
+})
+
+
 class Proposal(_Strict):
     proposal_id: str
     thread_id: str
@@ -61,6 +79,14 @@ class GateCheck(StrEnum):
     #: any tool. Checks 1-6 above have no memory of a *different* proposal
     #: in the same conversation; this is the one check that does.
     BLOCKED_END_STATE = "blocked_end_state"
+    #: I-2 (see the design spec's Decision 4, and whatsapp-v1-plan-and-act-
+    #: spec.md §4). A CONVERSATIONAL_FACTS value already seen in an earlier
+    #: proposal in this trajectory changed on a later one. I-3's sibling:
+    #: I-3 only compares the (slot_id, service_category) end state a
+    #: book/reschedule proposal targets, so a flip aimed at a *different*
+    #: slot -- never blocked there before -- slips past it. This check
+    #: catches the flip itself, independent of which slot it targets.
+    FACT_STABILITY = "fact_stability"
 
 
 class BlockKind(StrEnum):

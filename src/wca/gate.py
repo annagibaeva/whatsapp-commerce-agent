@@ -1,4 +1,4 @@
-"""The gate. Six per-action checks, plus one trajectory-aware check. It
+"""The gate. Six per-action checks, plus two trajectory-aware checks. It
 can only say no.
 
 The gate calls no model. It takes read-only views of the calendar and the
@@ -10,17 +10,25 @@ check failed and which kind of mistake it was. Grounding means the agent
 used a rule that does not exist or does not apply. Conclusion means the
 rules were right and the call was still wrong. Evasion means neither --
 the planner reached a state this trajectory already refused, by a
-different route (I-3; see docs/superpowers/specs/
-2026-09-10-v1-trajectory-gate-design.md). `trajectory` is optional and
-defaults to `None`, in which case I-3 is a no-op and every other check
-behaves exactly as it did before I-3 existed.
+different route (I-3), or flipped a fact the trajectory already
+established (I-2) -- see docs/superpowers/specs/
+2026-09-10-v1-trajectory-gate-design.md. `trajectory` is optional and
+defaults to `None`, in which case I-2 and I-3 are both no-ops and every
+other check behaves exactly as it did before either existed.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from wca.models import BlockKind, GateCheck, Proposal, Trajectory, Verdict
+from wca.models import (
+    CONVERSATIONAL_FACTS,
+    BlockKind,
+    GateCheck,
+    Proposal,
+    Trajectory,
+    Verdict,
+)
 from wca.rules.evaluate import Tri, evaluate_rule, missing_facts
 from wca.rules.schema import Rule, RuleSet
 from wca.rules.specificity import is_more_specific, matching_rules, unknown_rules
@@ -96,6 +104,46 @@ def evaluate(
                         f"{target[1]} at {target[0]} was already blocked in this "
                         f"trajectory ({earlier_verdict.check}: {earlier_verdict.reason}); "
                         "reaching it by a different route does not un-block it",
+                    )
+
+    # I-2 (fact stability). A CONVERSATIONAL_FACTS value already
+    # established by an earlier proposal in this trajectory cannot
+    # silently change on this one. I-3's sibling, and it catches what I-3
+    # structurally cannot: I-3 only compares the (slot_id,
+    # service_category) end state a book/reschedule proposal targets, so
+    # a fact flip aimed at a slot I-3 never blocked -- a genuinely
+    # different slot, or a first attempt at any slot at all -- slips past
+    # it. This check catches the flip itself, independent of which slot
+    # the new proposal targets and independent of whether any earlier
+    # proposal was blocked.
+    #
+    # Only CONVERSATIONAL_FACTS are compared. DERIVED_FACTS
+    # (service_category, quoted_price_minor, requested_weekday,
+    # hours_until_appointment) legitimately differ between proposals -- a
+    # different slot really does have a different hours_until_appointment
+    # and requested_weekday, a different service really does have a
+    # different service_category and quoted_price_minor -- both are
+    # recomputed fresh from the slot and catalogue on every
+    # request_booking call, never read from anywhere stable, so comparing
+    # them here would flag ordinary, legitimate variation as evasion.
+    # CONVERSATIONAL_FACTS is imported from wca.models rather than
+    # re-listed here or imported from wca.tools -- see the comment on
+    # wca.models.CONVERSATIONAL_FACTS for why importing from wca.tools
+    # would both create a circular import and break gate purity.
+    if trajectory is not None:
+        for key in CONVERSATIONAL_FACTS:
+            if key not in facts:
+                continue
+            for earlier_proposal in trajectory.proposals:
+                if key not in earlier_proposal.facts:
+                    continue
+                if earlier_proposal.facts[key] != facts[key]:
+                    return Verdict.blocked(
+                        GateCheck.FACT_STABILITY, BlockKind.EVASION,
+                        f"{key} was already established as "
+                        f"{earlier_proposal.facts[key]!r} earlier in this trajectory "
+                        f"({earlier_proposal.proposal_id}) and cannot silently change "
+                        f"to {facts[key]!r} now",
                     )
 
     # 1. Every cited rule exists at the version cited.
