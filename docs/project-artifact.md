@@ -2,7 +2,7 @@
 
 *Can an agent be allowed to commit a business's inventory, not just answer questions about it?*
 
-**Anna Gibaeva** · v0 shipped and validated on a live WhatsApp thread · 327 tests · 9 September 2026
+**Anna Gibaeva** · v0 shipped and validated on a live WhatsApp thread · 350 tests · 9 September 2026
 
 ---
 
@@ -59,32 +59,46 @@ Planned in `docs/superpowers/plans/2026-09-09-wca-v1.md`.
 | Iter. | Cost & latency factors | Optimizations | Guardrails | Eval metrics |
 |---|---|---|---|---|
 | **1 — the gate** | Gate makes **no model call**, so the decision path costs nothing per proposal. Latency **not measured**. | Rules evaluated as data, not code. Specificity derived from `requires_facts`, not declared. | Six checks. Absolute veto: `deny` and `require_escalation` block against all matching rules, TRUE and UNKNOWN. Blocks labelled *grounding* or *conclusion*. | **MEASURED —** bad bookings 0/20 gate on, 6/20 gate off. Booking rate 4/4. Escalation precision 4/4. Cost of control 0. |
-| **2 — the live thread** | 2 model calls per turn: extraction (haiku) + agent turn with tools (haiku, ≤8 iterations). Token usage captured on extraction only. **Cost per booking not computed.** | History capped at N turns. Message budget 20/hour/thread. Slot labels precomputed in code so the model never does clock arithmetic. Buttons and lists cut turns by replacing typed answers with taps. | HMAC over raw bytes, rejected before parsing. Dedup inside the queued job, not at the edge. Two-asks-per-fact cap then escalate. Shared-secret auth on both n8n endpoints, closed when unset. Interactive shape derived from tool results, never model-declared. | **MEASURED —** 327 tests green. Live thread completed end to end. **NOT MEASURED —** live latency, cost per resolved booking, real-traffic accuracy. |
+| **2 — the live thread** | 2 model calls per turn: extraction (haiku) + agent turn with tools (haiku, ≤8 iterations). Extraction, retry and agent-call cost all priced and carried to the audit record. **Not yet measured against real traffic.** | History capped at N turns. Message budget 20/hour/thread. Slot labels precomputed in code so the model never does clock arithmetic. Buttons and lists cut turns by replacing typed answers with taps. | HMAC over raw bytes, rejected before parsing. Dedup inside the queued job, not at the edge. Two-asks-per-fact cap then escalate. Shared-secret auth on both n8n endpoints, closed when unset. Interactive shape derived from tool results, never model-declared. | **MEASURED —** 350 tests green. Live thread completed end to end. **NOT MEASURED —** live latency, cost per resolved booking, real-traffic accuracy. |
 | **3 — durable state** | **PROJECTED —** SQLite adds a write per turn; a live calendar adds a network read inside the gate's synchronous path. | **PROJECTED —** hold ledger in front of the external calendar, since no real calendar API offers a lease. | **PROJECTED —** `view()` must be a live read every call or gate check 5 stops catching external double-bookings. Every new inbound surface must terminate in the same propose → evaluate → commit path. | **PROJECTED —** no numbers exist. Nothing here has been run. |
 
 ### Open items
 
-1. **Model tiering is declared and not implemented.** `LARGE_MODEL` and a `PRICES` table exist in
-   `extract/anthropic.py`. No code path selects the large model; nothing multiplies tokens by
-   prices. Every call is haiku. Either wire the escalation and the cost calculation, or delete
-   both constants — right now the repo asserts a cost architecture it does not have.
-2. **The eval gates nothing.** `wca cases` exits 1 on a bad booking, but there is no CI, so no
-   regression fails anything. One workflow file turns a dashboard into a gate.
-3. **Cost per resolved booking cannot be computed.** Extraction tokens are captured on
-   `ExtractionResult` and never summed. The agent's tool call captures no usage at all, and the
-   tool-loop iteration count is a local variable that never reaches the audit record.
-4. **No pre-registered rule for whether the gate is working.** The KPI targets were written before
-   the runs, which is right. The gate-on/gate-off comparison was not given a threshold — "published
-   with counts" is honest but decides nothing.
-5. **Escalation is a dead end.** A ticket is raised and its deadline monitored. Nothing resumes the
+**Closed on 9 September**, each with a test that fails if the fix is removed:
+
+- **Model tiering was declared and not implemented.** `LARGE_MODEL` and a `PRICES` table existed
+  and nothing selected the large model. Now real: haiku first, one retry on opus when extraction
+  fails to parse, capped at two attempts.
+- **The eval gated nothing.** CI now runs the cases on every push and fails the build in both
+  directions — a case set that stops exercising the gate fails rather than looking like success.
+- **No written rule for "the gate is working."** Stated in the README: 0 bad bookings with the
+  gate on, at least one with it off. Recorded as written *after* v0's runs, so it binds what
+  comes next rather than blessing what already happened.
+- **Attempts were not logged**, so a first-pass extraction and a retried one were the same
+  number. `model` and `attempts` now ride on every extraction result.
+- **The audit log silently dropped almost everything.** `proposal_id` was `prop_0001` for every
+  turn on every thread, and `AuditLog.append` dedups on it — so after the first booking in a
+  process, every later record was discarded. Found while checking whether this page could
+  honestly draw an audit box. Two threads booking now produce two records; before the fix, one.
+
+**Still open:**
+
+1. **Cost per booking is measurable but not measured.** Extraction cost, agent-call cost and the
+   turn total now reach the audit record. Nothing has been run against real traffic, so every
+   figure here remains a model.
+2. **The model is not the bill.** A booking is roughly ten messages, and messaging cost overtakes
+   model cost above about $0.0037 per message — below published WhatsApp utility rates in
+   essentially every market. Turn count is the cost lever, not tokens. Nothing counts messages yet.
+3. **The gate sees one proposal, never the trajectory.** An action split into two individually
+   legal steps would not be caught. This is the substance of Phase 7.
+4. **Escalation is a dead end.** A ticket is raised and its deadline monitored. Nothing resumes the
    thread afterwards, and there is no path from human back to agent.
-6. **Cost of control is 0 over four bookable cases.** Four is too few to claim the gate costs
+5. **Cost of control is 0 over four bookable cases.** Four is too few to claim the gate costs
    nothing. This is the number most likely to move as the case set grows.
-7. **Escalation precision is gameable by the loop guard.** The two-ask cap converts extractor
-   failures into escalations. Those count as escalations the agent raised; whether they "genuinely
-   needed a human" is arguable, since a better extractor would not have needed one.
-8. **A1 unvalidated.** The 48-hour patch test rule is modelled on standard practice. No salon has
-   confirmed it.
+6. **Escalation precision is gameable by the loop guard.** The two-ask cap converts extractor
+   failures into escalations. A worse extractor therefore produces a better precision number.
+7. **A1 unvalidated.** The 48-hour patch test rule is modelled on standard practice. No salon has
+   confirmed it, and three checks depend on it.
 
 ---
 
@@ -140,13 +154,26 @@ flowchart LR
 The gate is the only node with no model behind it. Same code path gates live traffic and scores
 the offline test set, so the tests measure what actually runs.
 
-The retry loop is real: a BLOCK returns the gate's own reason text to the model, which can ask a
-question or try a different slot, capped at 8 tool iterations. That is what makes this an agent
-rather than a validated pipeline.
+**The loop is real, and it is turn-scoped.** Both halves of that matter.
 
-The eval harness is drawn **dashed** on purpose. It has a gate's exit code and no CI behind it,
-so it observes and does not block. Wire it to CI and this becomes a solid line — the single
-cheapest change in the build.
+Real: the model chooses which of four tools to call and in what order — no fixed sequence exists
+in code. `run_turn` loops while the model keeps calling tools, up to 8. Each iteration sees what
+the previous ones returned, including the gate's own block reason, so a refused booking can
+become a question or a different slot rather than a blind retry. Two of the tools change real
+state. Those are the four properties that separate an agent from a pipeline, and they hold.
+
+Turn-scoped: there is no plan the model writes down, nothing survives a process restart, and the
+gate sees one proposal — never the trajectory that produced it. So a goal pursued across two
+turns is invisible to it, and an action split into two individually-legal steps would not be
+caught. Closing that is Phase 7 of the v1 plan, not something v0 does.
+
+The honest claim is "plan-and-act within a turn, under a deterministic gate." Not "agentic",
+unqualified.
+
+The eval harness is drawn **solid** because it blocks. CI runs the twenty cases on every push and
+fails the build in both directions — no bad bookings with the gate on, and bad bookings still
+getting through with it off. Until 9 September it would have had to be dashed: the harness
+returned a failure code and nothing read it.
 
 Escalation is drawn in red because it is terminal. Once a thread escalates, nothing brings it back.
 
