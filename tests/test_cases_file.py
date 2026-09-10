@@ -5,14 +5,18 @@ from wca.cases import load_cases
 CASES = load_cases("cases/v0.cases.json")
 
 
-def test_there_are_twenty_cases():
-    assert len(CASES.cases) == 20
+def test_there_are_twenty_one_cases():
+    # Was twenty. clean_05 (a plain cut booking) was added once cut_allowed
+    # made cuts bookable -- see policy/salon.rules.json and cases/v0.cases.json.
+    assert len(CASES.cases) == 21
 
 
-def test_every_tier_has_four_cases():
+def test_every_tier_has_four_cases_except_clean_which_has_five():
+    # clean gained clean_05 for the new cut_allowed rule; every other tier
+    # is unchanged at four.
     counts = Counter(c.tier for c in CASES.cases)
     assert counts == {
-        "clean": 4, "adversarial": 4, "override": 4, "unanswerable": 4, "ambiguous": 4
+        "clean": 5, "adversarial": 4, "override": 4, "unanswerable": 4, "ambiguous": 4
     }
 
 

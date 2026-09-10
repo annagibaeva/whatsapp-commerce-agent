@@ -98,9 +98,14 @@
      "slot_id": "s_taken",
      "expect_action": "book", "expect_allowed": false, "expect_check": "slot_still_free", "would_be_bad_booking": true},
 
-    {"id": "ambiguous_04", "tier": "ambiguous", "note": "Not a colour service, so no colour rule applies at all. With the gate off this books with zero grounding for the appointment ever being offered.",
+    {"id": "ambiguous_04", "tier": "ambiguous", "note": "Not a colour service, so no colour rule applies at all -- but cut_allowed now grounds it directly. This case used to prove the opposite (a cut booked with zero grounding, gate off only); now it proves the grounding gap is closed: cuts are unrestricted by design (no colour-only rule reaches them), so this books cleanly with the gate on too.",
      "message": "Just a trim on Tuesday.",
      "facts": {"service_category": "cut", "requested_weekday": "tuesday", "hours_until_appointment": 120},
-     "expect_action": "book", "expect_allowed": false, "expect_check": "booking_cites_rule", "would_be_bad_booking": true}
+     "expect_action": "book", "expect_allowed": true},
+
+    {"id": "clean_05", "tier": "clean", "note": "A plain cut booking. cut_allowed grounds it and none of the four colour-only restriction rules (patch test, deposit, guardian, Sunday) ever reach a cut, so no other fact is even needed to book one.",
+     "message": "Can I get a cut on Wednesday please?",
+     "facts": {"service_category": "cut", "requested_weekday": "wednesday", "hours_until_appointment": 120},
+     "expect_action": "book", "expect_allowed": true}
   ]
 }
