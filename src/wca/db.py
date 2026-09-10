@@ -58,8 +58,25 @@ CREATE TABLE IF NOT EXISTS escalations (
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
+    # check_same_thread=False: this connection is shared by every durable
+    # store `build_serve_app` wires (Task 8), and `run_job` executes on
+    # whatever thread the webhook's background-task pool hands it -- not
+    # necessarily the thread that opened the connection. Safe because the
+    # SQLite library CPython ships is built with serialized threading
+    # (SQLITE_THREADSAFE=1): it takes its own internal mutex around each
+    # call, so concurrent use of one connection from multiple threads is
+    # the library's problem to serialize, not ours -- see
+    # `wca.calendar.ledger.HoldLedger`, whose own restart-and-concurrency
+    # test drives exactly this (one connection, eight threads).
+    #
+    # busy_timeout: without it, a second writer that loses a `BEGIN
+    # IMMEDIATE` race (see HoldLedger.create) gets an immediate
+    # `sqlite3.OperationalError: database is locked` instead of blocking
+    # until the first writer commits and then seeing the row it wrote --
+    # the clean "ok" vs "refused" split every caller here depends on.
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
