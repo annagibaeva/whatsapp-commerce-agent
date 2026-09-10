@@ -15,7 +15,11 @@ from wca.models import Action, CitedRule, Proposal
 from wca.rules.store import load_ruleset
 
 GATE = pathlib.Path("src/wca/gate.py")
-BANNED_PREFIXES = ("wca.extract", "wca.transport", "wca.conversation", "anthropic", "httpx", "requests")
+BANNED_PREFIXES = (
+    "wca.extract", "wca.transport", "wca.conversation", "wca.db",
+    "wca.calendar.sqlite", "wca.calendar.live", "wca.calendar.ledger",
+    "anthropic", "httpx", "requests", "sqlite3",
+)
 
 
 def _imported_modules(path: pathlib.Path) -> set[str]:
