@@ -71,14 +71,16 @@ observe → plan (or replan) → select next step → propose action
 it does not deliver a best-effort booking. Cap breach is a normal outcome with its own audit
 record, not an exception.
 
-**Tools.** `lookup_rules`, `check_calendar`, `ask_customer`, `place_hold`, `commit_booking`,
-`escalate`. Only `place_hold` and `commit_booking` mutate anything; both already exist behind
-the two-phase flow. Everything else is read-only or conversational, which keeps the blast
-radius of a bad plan small.
+**Tools.** The real surface is four, not six: `search_catalogue`, `check_availability`,
+`request_booking`, `escalate`. Only `request_booking` mutates anything, and it does the whole
+two-phase flow internally — hold, gate, then commit or release. There is no separate
+`place_hold`/`commit_booking` the planner can call, and this phase does not add one: that would
+be a second entry point to `CalendarPort.commit`, which `test_commit_callers` exists to prevent.
+The planner's freedom is in which of the four to call and in what order.
 
 **Block reasons go back to the planner.** `Verdict` already carries `check`, `kind` and
 `reason`. Feed all three. A planner that gets "blocked at `booking_cites_rule`: rule
-`colour_patch_test@2` requires 48h, appointment is 20h away" can reason; one that gets
+`patch_test_first_colour@1` requires 48h, appointment is 20h away" can reason; one that gets
 "blocked" can only re-roll.
 
 ---
@@ -91,9 +93,13 @@ structurally cannot check. New `GateCheck` members: `FACT_PROVENANCE`,
 distinct from `GROUNDING` and `CONCLUSION` because it is a different kind of mistake and
 should be counted separately.
 
-**I-1 · Fact provenance.** Every key in `proposal.facts` must trace to an entry in
-`fact_ledger` whose source is `customer_message`, `calendar`, or `ruleset`. A fact the
-planner asserted with no source is blocked.
+**I-1 · Fact provenance. Not built — superseded by a stronger guarantee already in the repo.**
+This invariant assumes the planner assembles the facts it cites. It does not, and giving it that
+ability would reverse a control fixed twice: `propose()` builds `cited_rules` in code from
+`matching_rules`, and `request_booking` pops any supplied `hours_until_appointment` or
+`requested_weekday` and recomputes both from the slot. Facts stay code-derived — `DERIVED_FACTS`
+from the catalogue and slot, `CONVERSATIONAL_FACTS` from the extractor — and there is no third
+channel. Nothing to trace, because there is no path. See Phase 7's intro in the v1 plan.
 
 > This is the most important invariant in the spec. In v0, facts came from extraction over a
 > customer message. In v1 the planner assembles the facts it cites — which means the planner
@@ -149,18 +155,21 @@ per-action gate running the same cases to be worth anything.
 
 ## 6. Invariant tests (must exist before merge)
 
-- `override_01` never reaches `commit_booking` at any revision depth.
+- `override_01` never books at any revision depth — asserted on `calendar.bookings()`, not on a
+  `commit_booking` tool call, which does not exist.
 - `unanswerable_01` never books; the missing fact is asked for, not assumed.
 - No trajectory commits a booking whose cited rule was blocked earlier in the same trajectory.
 - Budget exhaustion always yields `escalate`.
-- Every `commit_booking` has a matching `place_hold` earlier in the trajectory.
+- Every commit has a matching hold. Already structurally true inside `request_booking`; the
+  trajectory test asserts no path reaches `calendar.commit` except through it.
 
 ---
 
 ## 7. CI
 
-The repo has no workflow. Add one with the loop, because a planner is the change that most
-needs a regression gate:
+**Corrected 10 September 2026: the workflow exists.** `.github/workflows/ci.yml` landed with
+v0's final fixes and runs the suite plus both gate directions on every push. What this phase
+adds to it is the trajectory tiers:
 
 ```
 lint → unit → cases (all tiers) → invariants → budget-cap check
