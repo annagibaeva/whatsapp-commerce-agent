@@ -4,7 +4,8 @@ import time
 from wca.clock import utc
 from wca.conversation.dedup import DedupStore
 from wca.conversation.queue import ThreadQueue
-from wca.conversation.state import ConversationState, ConversationStore
+from wca.conversation.state import ConversationState, ConversationStore, SqliteConversationStore
+from wca.db import connect, init_schema
 
 
 def test_dedup_reports_a_repeat():
@@ -41,6 +42,64 @@ def test_last_inbound_moves_with_each_message_and_drives_the_window():
     state = ConversationState(thread_id="t1", last_inbound_at=utc(2026, 8, 21, 9))
     state.add_facts({}, now=utc(2026, 8, 21, 15))
     assert state.last_inbound_at == utc(2026, 8, 21, 15)
+
+
+# --- ConversationStore.save: a no-op-shaped extra call ------------------------
+
+def test_in_memory_store_save_is_a_no_op_that_does_not_raise():
+    """`ConversationStore.save` exists purely so a call site that does not
+    know whether it holds the in-memory or the durable store can call
+    `save` unconditionally. The in-memory store's own object identity
+    already makes it a no-op -- this just proves it does not raise and
+    the state is still there afterwards."""
+    store = ConversationStore()
+    state = store.get_or_create("t1", now=utc(2026, 8, 21, 9))
+    state.add_facts({"service_category": "colour"}, now=utc(2026, 8, 21, 9))
+    store.save(state)  # must not raise
+    assert store.get("t1").facts == {"service_category": "colour"}
+
+
+# --- SqliteConversationStore: the property that matters ------------------------
+
+def test_facts_survive_reopening_the_connection(tmp_path):
+    db_path = tmp_path / "wca.db"
+    conn1 = connect(db_path)
+    init_schema(conn1)
+    store1 = SqliteConversationStore(conn1)
+    state = store1.get_or_create("t1", now=utc(2026, 9, 9, 10))
+    state.add_facts({"service_category": "colour"}, now=utc(2026, 9, 9, 10, 5))
+    store1.save(state)
+    conn1.close()
+
+    conn2 = connect(db_path)
+    store2 = SqliteConversationStore(conn2)
+    reloaded = store2.get("t1")
+    assert reloaded is not None
+    assert reloaded.facts == {"service_category": "colour"}
+    assert reloaded.last_inbound_at == utc(2026, 9, 9, 10, 5)
+
+
+def test_sqlite_store_get_returns_none_for_an_unknown_thread(tmp_path):
+    conn = connect(tmp_path / "wca.db")
+    init_schema(conn)
+    store = SqliteConversationStore(conn)
+    assert store.get("no_such_thread") is None
+
+
+def test_sqlite_store_get_or_create_persists_a_fresh_thread_immediately(tmp_path):
+    """get_or_create writes the new row itself -- a caller that never
+    calls save() on a brand-new thread (e.g. one that adds no facts this
+    turn) must still see it survive a restart."""
+    db_path = tmp_path / "wca.db"
+    conn1 = connect(db_path)
+    init_schema(conn1)
+    SqliteConversationStore(conn1).get_or_create("t1", now=utc(2026, 9, 9, 10))
+    conn1.close()
+
+    conn2 = connect(db_path)
+    reloaded = SqliteConversationStore(conn2).get("t1")
+    assert reloaded is not None
+    assert reloaded.facts == {}
 
 
 def test_the_queue_runs_one_thread_in_order():

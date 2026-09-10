@@ -438,6 +438,7 @@ def build_serve_app(
                 thread_history,
             )
             state.add_facts(extraction.facts, now=now)
+            conversations.save(state)
 
             ctx = ToolContext(
                 ruleset=ruleset, catalogue=catalogue, calendar=calendar,
