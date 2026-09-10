@@ -1,4 +1,5 @@
-"""The gate. Six checks. It can only say no.
+"""The gate. Six per-action checks, plus one trajectory-aware check. It
+can only say no.
 
 The gate calls no model. It takes read-only views of the calendar and the
 window rather than the objects themselves, so it cannot change anything
@@ -7,14 +8,19 @@ even by accident.
 Checks run in order and stop at the first failure. Every block says which
 check failed and which kind of mistake it was. Grounding means the agent
 used a rule that does not exist or does not apply. Conclusion means the
-rules were right and the call was still wrong.
+rules were right and the call was still wrong. Evasion means neither --
+the planner reached a state this trajectory already refused, by a
+different route (I-3; see docs/superpowers/specs/
+2026-09-10-v1-trajectory-gate-design.md). `trajectory` is optional and
+defaults to `None`, in which case I-3 is a no-op and every other check
+behaves exactly as it did before I-3 existed.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from wca.models import BlockKind, GateCheck, Proposal, Verdict
+from wca.models import BlockKind, GateCheck, Proposal, Trajectory, Verdict
 from wca.rules.evaluate import Tri, evaluate_rule, missing_facts
 from wca.rules.schema import Rule, RuleSet
 from wca.rules.specificity import is_more_specific, matching_rules, unknown_rules
@@ -45,8 +51,52 @@ def evaluate(
     ruleset: RuleSet,
     calendar_view: dict[str, Any],
     window_view: dict[str, Any],
+    trajectory: Trajectory | None = None,
 ) -> Verdict:
     facts = proposal.facts
+
+    # I-3 (no blocked end-state by decomposition). Runs first, ahead of
+    # every per-proposal check below -- path-independence only means
+    # something if a later attempt can't out-argue an earlier block by
+    # citing different rules, arriving with different facts, or coming
+    # through a different tool. Checks 1-6 re-verify each fresh proposal
+    # correctly, but they have no memory of what a *different* proposal in
+    # this trajectory already reached and was refused; that is the gap
+    # named in the design spec's §3, and this is the only check that
+    # closes it. `trajectory=None` (every existing caller) makes this a
+    # no-op, so nothing about the 350 pre-existing tests changes.
+    #
+    # "Outcome" is kept deliberately narrow and mechanical: the
+    # (slot_id, service_category) pair a book/reschedule proposal targets.
+    # Both halves are code-derived (Action.slot_id is never model-typed
+    # free text; service_category is always DERIVED_FACTS, computed from
+    # the catalogue in wca.tools.request_booking) -- nothing about this
+    # key can be moved by the model. If that exact pair was blocked
+    # earlier in this trajectory by a genuine refusal (not a PASS), it
+    # stays blocked for the rest of the trajectory, full stop, regardless
+    # of which tool or how many steps produced this new attempt at it.
+    # "reschedule" is not a real Action.type in this codebase yet (no
+    # reschedule_booking tool exists on this branch -- see
+    # docs/superpowers/specs/2026-09-10-decomposition-probe.md, scenario
+    # 3) -- included here anyway so this check does not need to change
+    # the day that tool lands.
+    if trajectory is not None and proposal.action.type in ("book", "reschedule"):
+        target = (proposal.action.slot_id, proposal.facts.get("service_category"))
+        if target[0] is not None:
+            for earlier_proposal, earlier_verdict in zip(trajectory.proposals, trajectory.verdicts):
+                if earlier_verdict.allowed or earlier_proposal.action.type not in ("book", "reschedule"):
+                    continue
+                earlier_target = (
+                    earlier_proposal.action.slot_id,
+                    earlier_proposal.facts.get("service_category"),
+                )
+                if earlier_target == target:
+                    return Verdict.blocked(
+                        GateCheck.BLOCKED_END_STATE, BlockKind.EVASION,
+                        f"{target[1]} at {target[0]} was already blocked in this "
+                        f"trajectory ({earlier_verdict.check}: {earlier_verdict.reason}); "
+                        "reaching it by a different route does not un-block it",
+                    )
 
     # 1. Every cited rule exists at the version cited.
     cited = []

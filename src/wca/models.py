@@ -55,6 +55,12 @@ class GateCheck(StrEnum):
     BOOKING_CITES_RULE = "booking_cites_rule"
     SLOT_STILL_FREE = "slot_still_free"
     ESCALATION_DELIVERABLE = "escalation_deliverable"
+    #: I-3 (see docs/superpowers/specs/2026-09-10-v1-trajectory-gate-design.md
+    #: §5). A book/reschedule proposal targets a (slot_id, service_category)
+    #: pair this trajectory already refused, by any earlier proposal, via
+    #: any tool. Checks 1-6 above have no memory of a *different* proposal
+    #: in the same conversation; this is the one check that does.
+    BLOCKED_END_STATE = "blocked_end_state"
 
 
 class BlockKind(StrEnum):
@@ -62,10 +68,16 @@ class BlockKind(StrEnum):
 
     grounding: the agent used a rule that does not exist or does not apply.
     conclusion: the rules were right and the call was still wrong.
+    evasion: neither -- the planner reached a state this trajectory
+        already refused, by a different route. Counted separately from
+        grounding and conclusion because it is a different failure with a
+        different fix: a planner rattling the door, not reasoning badly
+        about policy or about the world.
     """
 
     GROUNDING = "grounding"
     CONCLUSION = "conclusion"
+    EVASION = "evasion"
 
 
 class Verdict(_Strict):
@@ -91,6 +103,33 @@ class Verdict(_Strict):
     @classmethod
     def blocked(cls, check: GateCheck, kind: BlockKind, reason: str) -> Verdict:
         return cls(allowed=False, check=check, kind=kind, reason=reason)
+
+
+class Trajectory(_Strict):
+    """Every proposal and verdict this thread has produced so far, in order.
+
+    In memory only in this slice -- no SQLite store, see
+    docs/superpowers/specs/2026-09-10-v1-trajectory-gate-design.md §4 and
+    Decision 3. `proposals` and `verdicts` are parallel tuples, not a list
+    of pairs, because `AuditRecord` already stores `proposal`/`verdict`
+    this way and I-3 (`gate.py`) walks both with `zip()` -- one shape for
+    "a decision" across this codebase, not two.
+
+    Deliberately thin: no `plans` field (no `Plan`/`PlanStep` object
+    exists in this slice, see the design spec's Decision 2), no
+    `fact_ledger` (I-2, fact stability, is not built in this slice, see
+    Decision 4), no `tool_calls` counter (I-4, budget, likewise deferred).
+    Adding fields nothing reads yet would be scope the design spec
+    explicitly does not ask for; this holds exactly what I-3 needs.
+
+    Every "append" is a `model_copy` -- `Trajectory` is frozen like every
+    other `_Strict` model, so `t.model_copy(update={"proposals": t.proposals
+    + (new,)})` is how a caller grows one, never in-place mutation.
+    """
+
+    thread_id: str
+    proposals: tuple[Proposal, ...] = ()
+    verdicts: tuple[Verdict, ...] = ()   # verdicts[i] is the verdict for proposals[i]
 
 
 class EscalationTicket(_Strict):
