@@ -9,6 +9,14 @@
       "source_text": "We offer colour appointments."
     },
     {
+      "id": "cut_allowed",
+      "version": 1,
+      "condition": {"fact": "service_category", "op": "eq", "value": "cut"},
+      "outcome": {"type": "allow", "reason": "cut appointments are offered"},
+      "priority": 0,
+      "source_text": "We offer cuts. No patch test is required for a cut."
+    },
+    {
       "id": "patch_test_first_colour",
       "version": 1,
       "condition": {"all": [

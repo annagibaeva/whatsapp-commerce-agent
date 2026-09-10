@@ -7,8 +7,9 @@ from wca.rules.store import load_ruleset
 
 def test_the_real_rules_file_loads():
     rs = load_ruleset("policy/salon.rules.json")
-    assert len(rs.rules) == 5
+    assert len(rs.rules) == 6
     assert rs.get("patch_test_first_colour", 1) is not None
+    assert rs.get("cut_allowed", 1) is not None
     assert len(rs.ruleset_version) == 12
 
 
