@@ -729,6 +729,60 @@ def test_eleven_slots_falls_back_to_plain_text_not_a_raise_or_a_truncation():
     assert sent[0].body == "Lots of options this week for a cut."
 
 
+# --- Task 8: build_serve_app boots with every durable store wired in --------
+
+def test_build_serve_app_boots_and_works_with_every_durable_store(tmp_path):
+    """Not a reimplementation of each store's own restart test (those live
+    in test_audit.py/test_conversation.py/test_scheduler.py/
+    test_calendar_sqlite.py) -- this proves the wiring itself: every
+    durable store handed to build_serve_app at once, through the real
+    webhook, and that the dedup it produces is actually on disk, not an
+    in-memory set this one instance happens to hold."""
+    from wca.audit import SqliteAuditLog
+    from wca.calendar.mock import Slot
+    from wca.calendar.sqlite import SqliteCalendar
+    from wca.conversation.dedup import SqliteDedupStore
+    from wca.conversation.state import SqliteConversationStore
+    from wca.db import connect, init_schema
+    from wca.scheduler import SqliteEscalationBook
+
+    db_path = tmp_path / "wca.db"
+    conn = connect(db_path)
+    init_schema(conn)
+    calendar = SqliteCalendar(conn, slots=(Slot("s_wiring", None),))
+    transport = FakeTransport()
+
+    app = build_serve_app(
+        settings=WebhookSettings(app_secret=SECRET, verify_token=VERIFY_TOKEN),
+        ruleset=RULES,
+        catalogue=CATALOGUE,
+        calendar=calendar,
+        client=_StubClient(),
+        extractor=FakeExtractor(script={}),
+        transport=transport,
+        audit=SqliteAuditLog(conn),
+        conversations=SqliteConversationStore(conn),
+        dedup=SqliteDedupStore(conn),
+        escalations=SqliteEscalationBook(conn),
+        enable_scheduler=False,
+    )
+    tc = TestClient(app)
+
+    r = _post(tc, "wamid.durable_wiring", "447700900099", "hi there")
+    assert r.status_code == 200
+    assert len(transport.sent()) == 1
+
+    # Redelivery is still deduped -- through the durable dedup store, not
+    # a default in-memory one build_serve_app might have fallen back to.
+    _post(tc, "wamid.durable_wiring", "447700900099", "hi there")
+    assert len(transport.sent()) == 1
+
+    # And it is actually on disk: a second, independent connection to the
+    # same file sees it too.
+    conn2 = connect(db_path)
+    assert SqliteDedupStore(conn2).seen("wamid.durable_wiring") is True
+
+
 def test_a_turn_with_no_choices_still_sends_plain_text():
     """No tool ran, so there is nothing for _interactive_offer to build an
     offer out of -- the reply goes out exactly as it always has."""

@@ -78,6 +78,41 @@ def test_the_real_registry_still_serves_the_rule_id_escalations():
 # --- C1: serve fails fast without an extraction key, rather than running
 # --- with a silent no-op agent ------------------------------------------
 
+# --- wca db init --------------------------------------------------------------
+
+def test_db_init_creates_the_six_tables(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "wca.db"
+    result = _run("db", "init", "--db", str(db_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "initialised" in result.stdout
+    conn = sqlite3.connect(db_path)
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"audit_records", "conversations", "dedup_messages", "holds", "bookings", "escalations"} <= names
+
+
+def test_db_init_run_twice_does_not_raise_and_keeps_data(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "wca.db"
+    first = _run("db", "init", "--db", str(db_path))
+    assert first.returncode == 0
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("INSERT INTO dedup_messages VALUES ('m1')")
+    conn.commit()
+    conn.close()
+
+    second = _run("db", "init", "--db", str(db_path))
+    assert second.returncode == 0
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT message_id FROM dedup_messages").fetchone()
+    assert row == ("m1",)
+
+
 def test_cmd_serve_fails_fast_when_anthropic_api_key_is_missing(monkeypatch):
     """Never touches the real .env: _load_dotenv is stubbed out and every
     other required variable is set directly on the environment, so this

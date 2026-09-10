@@ -267,6 +267,22 @@ def cmd_rules(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_db_init(args: argparse.Namespace) -> int:
+    """`wca db init --db <path>`: create the sqlite schema, one command.
+
+    Thin on purpose -- `connect` + `init_schema` (Task 1) already do the
+    whole job and are already safe to run against a db that has data in
+    it. This exists so setting up a new deployment's db file is one
+    documented command, not "run some Python".
+    """
+    from wca.db import connect, init_schema
+
+    conn = connect(args.db)
+    init_schema(conn)
+    print(f"initialised {args.db}")
+    return 0
+
+
 def cmd_send(args: argparse.Namespace) -> int:
     from wca.transport.whatsapp import WhatsAppTransport
 
@@ -626,16 +642,49 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # Length only — never the secret itself. Confirms which .env won.
     print(f"[serve] loaded {env_path} (app_secret_len={len(secret)})")
 
+    # --db, if given: every store build_serve_app wires becomes the
+    # durable, sqlite-backed one instead of the in-memory default --
+    # audit, conversation state, dedup, escalations, and the calendar
+    # itself, all sharing one connection to the same file (see
+    # `wca.db.connect` for why that connection is safe to share across
+    # the webhook's background-task threads). Omit it and `serve`
+    # behaves exactly as before: every store in memory, gone on restart
+    # -- that stays the default so nothing that doesn't pass --db changes
+    # behaviour.
+    db_path = getattr(args, "db", None)
+    durable_kwargs: dict[str, Any] = {}
+    if db_path:
+        from wca.audit import SqliteAuditLog
+        from wca.calendar.sqlite import SqliteCalendar
+        from wca.conversation.dedup import SqliteDedupStore
+        from wca.conversation.state import SqliteConversationStore
+        from wca.db import connect, init_schema
+        from wca.scheduler import SqliteEscalationBook
+
+        conn = connect(db_path)
+        init_schema(conn)
+        calendar: Any = SqliteCalendar(conn, slots=_demo_slots(DEMO_CALENDAR_START))
+        durable_kwargs = {
+            "audit": SqliteAuditLog(conn),
+            "conversations": SqliteConversationStore(conn),
+            "dedup": SqliteDedupStore(conn),
+            "escalations": SqliteEscalationBook(conn),
+        }
+        print(f"[serve] durable state: {db_path}")
+    else:
+        calendar = _demo_calendar()
+
     app = build_serve_app(
         settings=WebhookSettings(
             app_secret=secret, verify_token=verify_token, reminder_secret=reminder_secret,
         ),
         ruleset=load_ruleset(args.rules),
         catalogue=load_catalogue(str(args.catalogue)),
-        calendar=_demo_calendar(),
+        calendar=calendar,
         client=Anthropic(),
         extractor=AnthropicExtractor(),
         transport=WhatsAppTransport(phone_number_id, access_token),
+        **durable_kwargs,
     )
     uvicorn.run(app, host="0.0.0.0", port=args.port)
     return 0
@@ -679,8 +728,17 @@ def main() -> int:
     p_serve.add_argument("--port", type=int, default=8000)
     p_serve.add_argument("--rules", type=Path, default=DEFAULT_RULES)
     p_serve.add_argument("--catalogue", type=Path, default=DEFAULT_CATALOGUE)
+    p_serve.add_argument(
+        "--db", type=Path, default=None,
+        help="sqlite db path for durable state; omitted = in-memory stores, gone on restart",
+    )
 
     sub.add_parser("reap", help="run one reaper pass and report what it released")
+
+    p_db = sub.add_parser("db", help="database maintenance")
+    db_sub = p_db.add_subparsers(dest="db_command", required=True)
+    p_db_init = db_sub.add_parser("init", help="create the sqlite schema at --db")
+    p_db_init.add_argument("--db", type=Path, required=True)
 
     args = parser.parse_args()
     if args.command == "cases":
@@ -693,6 +751,9 @@ def main() -> int:
         return cmd_serve(args)
     if args.command == "reap":
         return cmd_reap(args)
+    if args.command == "db":
+        if args.db_command == "init":
+            return cmd_db_init(args)
     return 0
 
 
