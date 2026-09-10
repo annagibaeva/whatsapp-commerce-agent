@@ -2,7 +2,7 @@ import threading
 import time
 
 from wca.clock import utc
-from wca.conversation.dedup import DedupStore
+from wca.conversation.dedup import DedupStore, SqliteDedupStore
 from wca.conversation.queue import ThreadQueue
 from wca.conversation.state import ConversationState, ConversationStore, SqliteConversationStore
 from wca.db import connect, init_schema
@@ -21,6 +21,38 @@ def test_dedup_remember_is_safe_to_repeat():
     store.remember("m1")
     store.remember("m1")
     assert len(store) == 1
+
+
+# --- SqliteDedupStore: redelivery-safe and survives a restart -----------------
+
+def test_sqlite_dedup_reports_a_repeat(tmp_path):
+    conn = connect(tmp_path / "wca.db")
+    init_schema(conn)
+    store = SqliteDedupStore(conn)
+    assert store.seen("m1") is False
+    store.remember("m1")
+    assert store.seen("m1") is True
+    assert store.seen("m2") is False
+
+
+def test_sqlite_dedup_remembering_twice_does_not_raise(tmp_path):
+    conn = connect(tmp_path / "wca.db")
+    init_schema(conn)
+    store = SqliteDedupStore(conn)
+    store.remember("m1")
+    store.remember("m1")   # redelivery -- must not raise
+    assert store.seen("m1") is True
+    assert len(store) == 1
+
+
+def test_sqlite_dedup_seen_survives_reopening_the_connection(tmp_path):
+    db_path = tmp_path / "wca.db"
+    conn1 = connect(db_path)
+    init_schema(conn1)
+    SqliteDedupStore(conn1).remember("m1")
+    conn1.close()
+    conn2 = connect(db_path)
+    assert SqliteDedupStore(conn2).seen("m1") is True
 
 
 def test_state_accumulates_facts_across_messages():
